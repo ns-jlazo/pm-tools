@@ -2,7 +2,10 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "ht
 import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
 import htm from "https://esm.sh/htm@3.1.1";
 
-const html = htm.bind(React.createElement);
+// htm passes '' for <> fragments; React 18 requires React.Fragment
+const html = htm.bind((type, props, ...children) =>
+  React.createElement(type || React.Fragment, props, ...children)
+);
 const STATUS_OPTIONS = ["planned", "in_progress", "blocked", "done"];
 const DEFAULT_PROJECT = { name: "", description: "", color: "#0f766e" };
 const DEFAULT_TEAM = { name: "", color: "#2563eb" };
