@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PM Gantt Tool</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://esm.sh" crossorigin />
+    <link rel="modulepreload" href="https://esm.sh/react@18.3.1" />
+    <link rel="modulepreload" href="https://esm.sh/react-dom@18.3.1/client" />
+    <link rel="modulepreload" href="https://esm.sh/htm@3.1.1" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div id="root">
+      <div class="loading-shell" role="status" aria-label="Loading application" aria-live="polite">
+        <div class="loading-card">
+          <div class="eyebrow">Booting timeline workspace</div>
+          <p class="hero-title" style="margin:16px 0 12px;font-size:1.8rem">Loading project portfolio</p>
+          <div class="skeleton-lines" aria-hidden="true">
+            <div class="skeleton-line"></div>
+            <div class="skeleton-line short"></div>
+            <div class="skeleton-line"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
