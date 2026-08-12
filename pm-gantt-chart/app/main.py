@@ -10,11 +10,17 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
-from . import models, schemas, services
-from .database import Base, SessionLocal, engine, get_db
-from .jira.auth import JiraNotConfigured
-from .jira.routes import router as jira_router
-from .jira import service as jira_service
+from .env import load_dotenv
+
+# Must run before the Jira modules are imported: `app.jira.client` reads its
+# retry tuning at import time, and every Jira route needs the credentials.
+load_dotenv()
+
+from . import models, schemas, services  # noqa: E402
+from .database import Base, SessionLocal, engine, get_db  # noqa: E402
+from .jira.auth import JiraNotConfigured  # noqa: E402
+from .jira.routes import router as jira_router  # noqa: E402
+from .jira import service as jira_service  # noqa: E402
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent

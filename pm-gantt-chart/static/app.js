@@ -7,6 +7,7 @@ const html = htm.bind((type, props, ...children) =>
   React.createElement(type || React.Fragment, props, ...children)
 );
 const STATUS_OPTIONS = ["planned", "in_progress", "blocked", "done"];
+const ISSUE_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 const DEFAULT_PROJECT = { name: "", description: "", color: "#0f766e" };
 const DEFAULT_TASK = {
   title: "",
@@ -66,6 +67,24 @@ function humanizeStatus(status) {
   return status.replaceAll("_", " ");
 }
 
+// A bad token looks exactly like "nothing matched": Jira answers searches
+// anonymously with zero rows and issue reads with a 404. Ask the health
+// endpoint (which probes /myself) so we can say what actually went wrong.
+async function jiraTrouble() {
+  try {
+    const health = await api("/api/jira/health");
+    if (!health.configured) {
+      return health.detail || "Jira is not configured on the server.";
+    }
+    if (!health.authenticated) {
+      return health.detail || "Jira rejected the server credentials.";
+    }
+  } catch (err) {
+    return `Could not reach the Jira health check: ${err.message}`;
+  }
+  return "";
+}
+
 function jiraStatusClass(category) {
   const key = (category || "").toLowerCase();
   if (key === "done") return "jira-status-pill done";
@@ -102,6 +121,7 @@ function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, set
   const [keyInput, setKeyInput] = useState("");
   const [pickedIssue, setPickedIssue] = useState(null);
   const [selectedTeamId, setSelectedTeamId] = useState("");
+  const [searched, setSearched] = useState(false);
 
   const runSearch = async (event) => {
     if (event) event.preventDefault();
@@ -110,7 +130,11 @@ function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, set
     let query = trimmedJql;
     if (!query && trimmedKeyword) {
       const safe = trimmedKeyword.replace(/"/g, '\\"');
-      query = `text ~ "${safe}" ORDER BY updated DESC`;
+      // `text ~` never matches an issue key, so a pasted key like SNA-28969
+      // would silently return zero rows. Detect that shape and look it up.
+      query = ISSUE_KEY_PATTERN.test(trimmedKeyword)
+        ? `issuekey = "${trimmedKeyword.toUpperCase()}"`
+        : `text ~ "${safe}" ORDER BY updated DESC`;
     }
     if (!query) {
       setError("Enter a JQL query or a keyword to search.");
@@ -120,10 +144,14 @@ function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, set
     setSearching(true);
     try {
       const payload = await api(`/api/jira/search?jql=${encodeURIComponent(query)}&limit=25`);
-      setResults(payload.issues || []);
+      const issues = payload.issues || [];
+      setResults(issues);
+      setSearched(true);
+      if (!issues.length) setError(await jiraTrouble());
     } catch (err) {
-      setError(err.message);
+      setError((await jiraTrouble()) || err.message);
       setResults([]);
+      setSearched(true);
     } finally {
       setSearching(false);
     }
@@ -142,7 +170,7 @@ function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, set
       const issue = await api(`/api/jira/issues/${encodeURIComponent(key)}`);
       setPickedIssue(issue);
     } catch (err) {
-      setError(err.message);
+      setError((await jiraTrouble()) || err.message);
       setPickedIssue(null);
     } finally {
       setSearching(false);
@@ -261,7 +289,11 @@ function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, set
                       )}
                     </div>
                   `
-                : html`<div className="empty-state">No results yet — run a search.</div>`}
+                : html`<div className="empty-state">
+                    ${searched
+                      ? "No issues matched that search."
+                      : "No results yet — run a search."}
+                  </div>`}
             `
           : html`
               <form onSubmit=${validateKey} className="jira-key-form">
@@ -383,6 +415,7 @@ function JiraProjectPanel({ projectId, teams, onMessage }) {
   const [showPicker, setShowPicker] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [pickerError, setPickerError] = useState("");
+  const [trouble, setTrouble] = useState("");
 
   const load = async () => {
     if (!projectId) return;
@@ -400,6 +433,7 @@ function JiraProjectPanel({ projectId, teams, onMessage }) {
   useEffect(() => {
     setData(null);
     load();
+    jiraTrouble().then(setTrouble);
   }, [projectId]);
 
   const forceSync = async () => {
@@ -478,6 +512,8 @@ function JiraProjectPanel({ projectId, teams, onMessage }) {
           </button>
         </div>
       </div>
+
+      ${trouble ? html`<div className="jira-modal-error">${trouble}</div>` : null}
 
       ${data && data.stale ? html`<div className="help-text">Showing cached data — refresh failed.</div>` : null}
 

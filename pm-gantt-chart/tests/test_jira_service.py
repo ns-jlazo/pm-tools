@@ -1,15 +1,19 @@
 import json
 import os
+import tempfile
 import unittest
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List
 from unittest import mock
 
+import requests
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import models, schemas
 from app.database import Base
+from app.env import load_dotenv
 from app.jira import service as jira_service
 from app.jira.auth import JiraNotConfigured
 
@@ -197,6 +201,85 @@ class JiraAuthTests(unittest.TestCase):
         ):
             client = jira_service.get_client()
             self.assertEqual(client.url, "https://ex.atlassian.net")
+
+
+class DotenvTests(unittest.TestCase):
+    """`.env` has to reach os.environ or every Jira route 503s."""
+
+    def _write(self, body: str) -> Path:
+        path = Path(self.tmp.name) / ".env"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_loads_values_and_strips_quotes(self) -> None:
+        path = self._write(
+            "# comment\n"
+            "\n"
+            "JIRA_URL=https://ex.atlassian.net\n"
+            'JIRA_EMAIL="a@b.com"\n'
+            "export JIRA_API_TOKEN='tok'\n"
+            "not a pair\n"
+        )
+        with mock.patch.dict(os.environ, {}, clear=True):
+            applied = load_dotenv(path)
+            self.assertEqual(os.environ["JIRA_URL"], "https://ex.atlassian.net")
+            self.assertEqual(os.environ["JIRA_EMAIL"], "a@b.com")
+            self.assertEqual(os.environ["JIRA_API_TOKEN"], "tok")
+            self.assertNotIn("not a pair", applied)
+
+    def test_real_environment_wins(self) -> None:
+        path = self._write("JIRA_EMAIL=file@b.com\n")
+        with mock.patch.dict(os.environ, {"JIRA_EMAIL": "shell@b.com"}, clear=True):
+            load_dotenv(path)
+            self.assertEqual(os.environ["JIRA_EMAIL"], "shell@b.com")
+            load_dotenv(path, override=True)
+            self.assertEqual(os.environ["JIRA_EMAIL"], "file@b.com")
+
+    def test_missing_file_is_a_no_op(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(load_dotenv(Path(self.tmp.name) / "absent"), {})
+
+
+class JiraHealthTests(unittest.TestCase):
+    """Bad tokens are invisible on search/issue reads, so health must probe."""
+
+    ENV = {
+        "JIRA_URL": "https://ex.atlassian.net",
+        "JIRA_EMAIL": "a@b.com",
+        "JIRA_API_TOKEN": "tok",
+    }
+
+    def test_not_configured(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            health = jira_service.check_health()
+        self.assertFalse(health.configured)
+        self.assertFalse(health.authenticated)
+
+    def test_authenticated(self) -> None:
+        client = mock.Mock()
+        client.get_myself.return_value = {"displayName": "Jamie Fox"}
+        with mock.patch.dict(os.environ, self.ENV, clear=True), mock.patch.object(
+            jira_service, "get_client", return_value=client
+        ):
+            health = jira_service.check_health()
+        self.assertTrue(health.authenticated)
+        self.assertEqual(health.account, "Jamie Fox")
+
+    def test_rejected_credentials(self) -> None:
+        response = mock.Mock(status_code=401)
+        client = mock.Mock()
+        client.get_myself.side_effect = requests.HTTPError(response=response)
+        with mock.patch.dict(os.environ, self.ENV, clear=True), mock.patch.object(
+            jira_service, "get_client", return_value=client
+        ):
+            health = jira_service.check_health()
+        self.assertTrue(health.configured)
+        self.assertFalse(health.authenticated)
+        self.assertIn("JIRA_API_TOKEN", health.detail)
 
 
 if __name__ == "__main__":

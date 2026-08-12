@@ -63,21 +63,65 @@ Read-only Jira integration for the pm-gantt-chart UI, letting users link Jira **
   - task link roundtrip
   - `JiraNotConfigured` when env is missing
   - `get_client()` builds a client from env
-- [x] `python3 -m pytest tests -q` → **10 passed** (2 pre-existing + 8 new).
+- [x] `python3 -m pytest tests -q` → **20 passed** (12 pre-existing + 8 new; see Phase 7).
+
+## Phase 7 — Fixes found during verification (2026-08-12)
+
+Verification against the `netskope.atlassian.net` tenant surfaced two defects that
+made every Jira lookup (e.g. `SNA-28969`) fail, plus one blind spot:
+
+- [x] **`.env` was never loaded.** `app/jira/auth.py` reads `os.environ`, but
+  `uvicorn app.main:app` only inherits the shell environment — a `.env` file was
+  ignored and all Jira routes returned 503. Added `app/env.py` (stdlib loader, no
+  new dependency; real env vars win) called from `app/main.py` before the Jira
+  imports and from `scripts/jira-search.py`. Path is resolved from `__file__`, so it
+  works regardless of the working directory uvicorn starts in.
+- [x] **Keyword search couldn't find an issue key.** The picker built
+  `text ~ "SNA-28969"`, which Jira never matches against keys → silent zero results.
+  `static/app.js` now detects a key-shaped keyword and queries
+  `issuekey = "SNA-28969"`; the empty state distinguishes "no matches" from
+  "not searched yet".
+- [x] **Bad credentials were indistinguishable from "no results."** Jira Cloud
+  treats a bad token as anonymous: `search/jql` → `200` with zero issues,
+  `GET /issue/{key}` → `404`, so the documented `502` mapping was unreachable.
+  Added `JiraClient.get_myself()` (returns a real `401`) plus
+  `service.check_health()`; `/api/jira/health` now reports `authenticated` and
+  `account`. The UI consults it whenever a search comes back empty or a key lookup
+  fails, and the Jira panel shows a persistent banner.
+- [x] Tests added for the `.env` loader (quotes/comments/`export`/precedence) and
+  the three `check_health` outcomes.
+- [x] `static/index.html` cache-busting bumped to `?v=20260812d`.
 
 ---
 
-## Verification checklist (manual, still to run against a real Jira tenant)
+## Verification checklist — run 2026-08-12 against `netskope.atlassian.net`
 
-- [ ] Export `JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` and hit `/api/jira/health` → `configured: true`.
-- [ ] `curl "/api/jira/search?jql=project=<KEY>&limit=5"` returns issue rows.
-- [ ] UI: **Link epic** → search → link → epic appears under the correct team.
-- [ ] UI: **Show stories** on a linked epic renders child issues.
-- [ ] UI: Update-task panel → **Link issue** → chip appears with correct status color.
-- [ ] TTL refresh: wait past `JIRA_SYNC_TTL_SECONDS`, reload dashboard, `synced_at` advances.
-- [ ] Bad key (`FAKE-9999`) via Paste-key → clean 404 surfaced in the modal.
-- [ ] Bad creds → 502 with "check JIRA_EMAIL / JIRA_API_TOKEN" surfaced in the UI.
-- [ ] `python3 scripts/jira-search.py "project = <KEY>"` prints results.
+Verified with `.venv` (Python 3.10; pydantic 2.9.2 has no cp314 wheel) on port 8010,
+`JIRA_SYNC_TTL_SECONDS=15`, epic `SNA-28969`.
+
+- [x] `.env` with `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` → `/api/jira/health`
+  returns `configured: true, authenticated: true, account: "Jocelyn Hernandez"`.
+- [x] `curl "/api/jira/search?jql=issuekey = \"SNA-28969\"&limit=5"` → 1 row
+  (Epic, In Progress, correct `browse/` URL).
+- [x] Link epic: `POST /api/projects/1/jira/links {"jira_key":"SNA-28969","team_id":2}`
+  → 201, and `GET /api/projects/1/jira` groups it under that team.
+- [x] Show stories: `GET /api/jira/issues/SNA-28969/children` → 10 child issues with
+  status categories (`indeterminate` / `done`).
+- [x] Task link: `POST /api/tasks/2/jira/links {"jira_key":"SNA-38622"}` → 201 with
+  `status_category: new` (drives the chip color).
+- [x] TTL refresh: `synced_at` advanced `19:24:12` → `19:24:37` after crossing the
+  TTL; `POST /api/projects/1/jira/sync` advances it on demand.
+- [x] Bad key: `GET /api/jira/issues/FAKE-9999` → `404 {"detail":"Jira issue not found."}`;
+  linking it → `400 "Jira issue FAKE-9999 was not found."`.
+- [x] Bad creds: server started with an invalid token → health reports
+  `authenticated: false` + "Jira rejected the credentials for … (check JIRA_EMAIL /
+  JIRA_API_TOKEN)", which the UI surfaces. Note: `search` still returns `200`/empty
+  and `issues/{key}` still `404` — Jira never sends `401` there, so the original
+  "bad creds → 502" expectation was wrong; health is the reliable signal.
+- [x] `python3 scripts/jira-search.py 'issuekey = "SNA-28969"'` prints the row;
+  `--json` works via `parent = "SNA-28969"`.
+- [ ] Browser click-through of the three UI flows (Link epic / Show stories / Link
+  issue) — endpoints and request construction verified, DOM interaction not driven.
 
 ## Deferred / out of scope
 

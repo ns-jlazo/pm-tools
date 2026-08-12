@@ -17,6 +17,29 @@ This installs FastAPI, Uvicorn, SQLAlchemy, Pydantic, and multipart support.
 
 ---
 
+## Jira credentials (optional)
+
+The Jira panel needs three variables. Create `pm-gantt-chart/.env` (next to
+`requirements.txt`) from `.env.example`:
+
+```text
+JIRA_URL=https://your-domain.atlassian.net
+JIRA_EMAIL=you@example.com
+JIRA_API_TOKEN=your-atlassian-api-token
+```
+
+The server loads this file on startup, so **restart uvicorn after editing it**.
+Shell exports override the file. Confirm the connection with:
+
+```bash
+curl -s http://127.0.0.1:8000/api/jira/health
+```
+
+`{"configured": true, "authenticated": true, ...}` means Jira is usable. See
+`skills/manage-jira/SKILL.md` for the linking flows and troubleshooting.
+
+---
+
 ## Starting the UI
 
 Run the server from the project root:

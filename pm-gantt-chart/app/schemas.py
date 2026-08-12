@@ -199,5 +199,7 @@ class ProjectJiraLinksGrouped(BaseModel):
 
 class JiraHealth(BaseModel):
     configured: bool
+    authenticated: bool = False
+    account: Optional[str] = None
     url: Optional[str] = None
     detail: Optional[str] = None

@@ -28,6 +28,10 @@ def _bootstrap_path() -> None:
 def main() -> int:
     _bootstrap_path()
 
+    from app.env import load_dotenv
+
+    load_dotenv()
+
     from app.jira.auth import JiraNotConfigured, get_jira_credentials
     from app.jira.client import JiraClient
 
