@@ -11,6 +11,12 @@ class ProjectCreate(BaseModel):
     color: str = Field(default="#0f766e", min_length=4, max_length=20)
 
 
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    description: Optional[str] = None
+    color: Optional[str] = Field(default=None, min_length=4, max_length=20)
+
+
 class ProjectRead(ProjectCreate):
     id: int
 

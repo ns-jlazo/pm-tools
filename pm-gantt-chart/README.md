@@ -9,6 +9,7 @@ Internal product and program management tool aligned to:
 
 - Portfolio landing page with project cards
 - Project-scoped workspaces (teams/tasks isolated per project)
+- Editable workspaces (rename, recolor, re-describe, delete) from the workspace hero
 - Timeline-first workspace layout
 - Inline timeline task editing popover
 - Dependency tracking and risk calculations
@@ -27,6 +28,8 @@ Open `http://127.0.0.1:8000`.
 
 - `GET /api/projects`
 - `POST /api/projects`
+- `PUT /api/projects/{project_id}`
+- `DELETE /api/projects/{project_id}`
 - `GET /api/projects/{project_id}/dashboard`
 - `POST /api/projects/{project_id}/teams`
 - `POST /api/projects/{project_id}/tasks`

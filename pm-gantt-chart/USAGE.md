@@ -56,7 +56,21 @@ Inside a project, the layout is:
 3. **Risk register** — a table of tasks flagged as at-risk or delayed.
 4. **Management forms** — team setup, task creation, task update, and CSV import, below the timeline.
 
-Use **Back to projects** (top-left) to return to the portfolio landing page.
+Use **Back to projects** — the arrow link above the hero, top-left — to return to the portfolio landing page.
+
+### Editing a Project Workspace
+
+Click the pencil icon beside the project title to open the edit panel on the right. From there you can:
+
+- Rename the project
+- Change its accent color
+- Edit (or clear) its description
+
+Changes save with **Save changes** and are reflected in both the workspace hero and the portfolio card.
+
+The panel's danger zone deletes the whole workspace, including every task, team, and Jira link
+attached to it. Because this cannot be undone, **Delete workspace** stays disabled until you type the
+project's exact name into the confirmation field.
 
 ### Inline Task Editing
 

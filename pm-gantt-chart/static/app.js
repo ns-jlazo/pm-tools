@@ -73,6 +73,26 @@ function jiraStatusClass(category) {
   return "jira-status-pill todo";
 }
 
+function PencilIcon() {
+  return html`
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z" />
+      <path d="M14.5 6.5l3 3" />
+    </svg>
+  `;
+}
+
+function BackArrowIcon() {
+  return html`
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 14L4 9l5-5" />
+      <path d="M4 9h9a7 7 0 0 1 7 7v4" />
+    </svg>
+  `;
+}
+
 function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, setError }) {
   const [mode, setMode] = useState("search");
   const [jql, setJql] = useState("");
@@ -1364,6 +1384,138 @@ function TeamManagerDrawer({ projectId, teams, onClose, onNotify, onChanged }) {
   `;
 }
 
+function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, onDeleted }) {
+  const [draft, setDraft] = useState({
+    name: project.name,
+    description: project.description || "",
+    color: project.color,
+  });
+  const [confirmName, setConfirmName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const canDelete = confirmName.trim() === project.name;
+
+  const save = async (event) => {
+    event.preventDefault();
+    if (!draft.name.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/projects/${project.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ ...draft, name: draft.name.trim() }),
+      });
+      onNotify(`Workspace "${draft.name.trim()}" updated.`, "success");
+      await onSaved();
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeProject = async () => {
+    if (!canDelete) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/projects/${project.id}`, { method: "DELETE" });
+      onNotify(`Workspace "${project.name}" deleted.`, "success");
+      await onDeleted();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return html`
+    <div
+      className="team-drawer-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Edit project workspace"
+      onClick=${onClose}
+    >
+      <div className="team-drawer" onClick=${(event) => event.stopPropagation()}>
+        <header className="team-drawer-header">
+          <h2 style=${{ margin: 0 }}>Edit workspace</h2>
+          <button className="button-secondary" type="button" onClick=${onClose}>Close</button>
+        </header>
+
+        <form onSubmit=${save}>
+          <div className="form-grid">
+            <div className="field-wide">
+              <label htmlFor="project-edit-name">Project name</label>
+              <input
+                id="project-edit-name"
+                value=${draft.name}
+                onInput=${(event) => setDraft({ ...draft, name: event.target.value })}
+                required
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="project-edit-color">Accent color</label>
+              <input
+                id="project-edit-color"
+                type="color"
+                value=${draft.color}
+                onInput=${(event) => setDraft({ ...draft, color: event.target.value })}
+              />
+            </div>
+            <div className="field-wide">
+              <label htmlFor="project-edit-description">Description</label>
+              <textarea
+                id="project-edit-description"
+                value=${draft.description}
+                onInput=${(event) => setDraft({ ...draft, description: event.target.value })}
+              ></textarea>
+            </div>
+          </div>
+          <div className="actions">
+            <button
+              className="button-primary"
+              type="submit"
+              disabled=${busy || !draft.name.trim()}
+              aria-busy=${busy}
+            >Save changes</button>
+          </div>
+        </form>
+
+        <div className="project-drawer-danger">
+          <strong>Danger zone</strong>
+          <p className="panel-copy" style=${{ margin: 0 }}>
+            Deleting this workspace also removes ${summary.total_tasks} task(s), ${summary.total_teams} team(s), and every Jira link on them. This cannot be undone.
+          </p>
+          <div className="field-wide">
+            <label htmlFor="project-delete-confirm">
+              Type “${project.name}” to confirm
+            </label>
+            <input
+              id="project-delete-confirm"
+              value=${confirmName}
+              onInput=${(event) => setConfirmName(event.target.value)}
+              placeholder=${project.name}
+              autoComplete="off"
+            />
+          </div>
+          <div className="actions">
+            <button
+              className="button-danger"
+              type="button"
+              onClick=${removeProject}
+              disabled=${busy || !canDelete}
+            >Delete workspace</button>
+          </div>
+        </div>
+
+        ${error ? html`<div className="team-drawer-row-error">${error}</div>` : null}
+      </div>
+    </div>
+  `;
+}
+
 function TaskTable({ tasks }) {
   return html`
     <section className="table-shell" id="risk-register">
@@ -1431,23 +1583,38 @@ function WorkspaceView({
   onCsvSubmit,
   onInlineSave,
   onNotify,
-  onTeamsChanged,
+  onWorkspaceRefresh,
+  onProjectDeleted,
   submitting,
 }) {
   const teams = dashboard.teams;
   const tasks = dashboard.tasks;
   const [teamDrawerOpen, setTeamDrawerOpen] = useState(false);
+  const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
 
   return html`
     <div className="app-shell">
+      <div className="workspace-topbar">
+        <button className="back-link" type="button" onClick=${onBack}>
+          <${BackArrowIcon} />
+          Back to projects
+        </button>
+      </div>
+
       <section className="hero">
         <div className="hero-card">
           <div className="eyebrow">Project workspace</div>
-          <h1 className="hero-title">${dashboard.project.name}</h1>
-          <p className="hero-copy">${dashboard.project.description || "No description yet."}</p>
-          <div className="actions">
-            <button className="button-secondary" type="button" onClick=${onBack}>Back to projects</button>
+          <div className="hero-title-row">
+            <h1 className="hero-title">${dashboard.project.name}</h1>
+            <button
+              className="icon-button"
+              type="button"
+              onClick=${() => setProjectDrawerOpen(true)}
+              aria-label="Edit project workspace"
+              title="Edit workspace"
+            ><${PencilIcon} /></button>
           </div>
+          <p className="hero-copy">${dashboard.project.description || "No description yet."}</p>
         </div>
         <div className="hero-side">
           <${SummaryCard}
@@ -1548,7 +1715,20 @@ function WorkspaceView({
               teams=${teams}
               onClose=${() => setTeamDrawerOpen(false)}
               onNotify=${onNotify}
-              onChanged=${onTeamsChanged}
+              onChanged=${onWorkspaceRefresh}
+            />
+          `
+        : null}
+
+      ${projectDrawerOpen
+        ? html`
+            <${ProjectSettingsDrawer}
+              project=${dashboard.project}
+              summary=${dashboard.summary}
+              onClose=${() => setProjectDrawerOpen(false)}
+              onNotify=${onNotify}
+              onSaved=${onWorkspaceRefresh}
+              onDeleted=${onProjectDeleted}
             />
           `
         : null}
@@ -1637,6 +1817,17 @@ function App() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const goToPortfolio = () => {
+    setSelectedProjectId(null);
+    setDashboard(null);
+    setEditTaskId("");
+  };
+
+  const handleProjectDeleted = async () => {
+    goToPortfolio();
+    await loadProjects();
   };
 
   const openProject = async (projectId) => {
@@ -1771,7 +1962,7 @@ function App() {
         ? html`
             <${WorkspaceView}
               dashboard=${dashboard}
-              onBack=${() => { setSelectedProjectId(null); setDashboard(null); setEditTaskId(""); }}
+              onBack=${goToPortfolio}
               taskForm=${taskForm}
               setTaskForm=${setTaskForm}
               editTaskId=${editTaskId}
@@ -1785,7 +1976,8 @@ function App() {
               onCsvSubmit=${handleCsvSubmit}
               onInlineSave=${handleUpdateTask}
               onNotify=${(text, tone) => { setMessage(text); setMessageTone(tone || "success"); }}
-              onTeamsChanged=${refreshWorkspace}
+              onWorkspaceRefresh=${refreshWorkspace}
+              onProjectDeleted=${handleProjectDeleted}
               submitting=${submitting}
             />
           `

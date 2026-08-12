@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 pm_tool.db
+.env

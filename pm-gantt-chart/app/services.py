@@ -180,6 +180,39 @@ def create_project(db: Session, payload: schemas.ProjectCreate) -> models.Projec
     return project
 
 
+def update_project(
+    db: Session, project: models.Project, payload: schemas.ProjectUpdate
+) -> models.Project:
+    updates = payload.model_dump(exclude_unset=True)
+    if "name" in updates and updates["name"] and updates["name"] != project.name:
+        clash = db.scalar(
+            select(models.Project).where(
+                models.Project.name == updates["name"],
+                models.Project.id != project.id,
+            )
+        )
+        if clash is not None:
+            raise ValueError("Another project already uses that name.")
+    for field, value in updates.items():
+        # description may legitimately be cleared to "", so only skip None.
+        if value is not None:
+            setattr(project, field, value)
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+def delete_project(db: Session, project: models.Project) -> None:
+    # Teams/tasks (and their dependencies + Jira links) cascade via the ORM, but
+    # project-level Jira links have no ORM cascade and SQLite does not enforce
+    # the DB-level ON DELETE CASCADE, so clear them explicitly.
+    db.query(models.ProjectJiraLink).filter(
+        models.ProjectJiraLink.project_id == project.id
+    ).delete(synchronize_session=False)
+    db.delete(project)
+    db.commit()
+
+
 def list_teams(db: Session, project_id: int) -> List[models.Team]:
     stmt = select(models.Team).where(models.Team.project_id == project_id).order_by(models.Team.name)
     return list(db.scalars(stmt).all())
