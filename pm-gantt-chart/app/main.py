@@ -47,7 +47,10 @@ def on_startup() -> None:
 
 @app.get("/")
 def read_index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 @app.get("/api/health")
