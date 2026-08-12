@@ -75,6 +75,31 @@ def create_project(
     return schemas.ProjectRead.model_validate(project)
 
 
+@app.put("/api/projects/{project_id}", response_model=schemas.ProjectRead)
+def update_project(
+    project_id: int,
+    payload: schemas.ProjectUpdate,
+    db: Session = Depends(get_db),
+) -> schemas.ProjectRead:
+    project = services.get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    try:
+        services.update_project(db, project, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return schemas.ProjectRead.model_validate(project)
+
+
+@app.delete("/api/projects/{project_id}", status_code=204, response_class=Response)
+def delete_project(project_id: int, db: Session = Depends(get_db)) -> Response:
+    project = services.get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    services.delete_project(db, project)
+    return Response(status_code=204)
+
+
 @app.get("/api/projects/{project_id}/dashboard", response_model=schemas.DashboardData)
 def get_project_dashboard(
     project_id: int, db: Session = Depends(get_db)
