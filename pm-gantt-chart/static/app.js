@@ -8,7 +8,6 @@ const html = htm.bind((type, props, ...children) =>
 );
 const STATUS_OPTIONS = ["planned", "in_progress", "blocked", "done"];
 const DEFAULT_PROJECT = { name: "", description: "", color: "#0f766e" };
-const DEFAULT_TEAM = { name: "", color: "#2563eb" };
 const DEFAULT_TASK = {
   title: "",
   description: "",
@@ -20,6 +19,8 @@ const DEFAULT_TASK = {
   status: "planned",
   progress: 0,
   dependency_ids: [],
+  contributor_team_ids: [],
+  jira_keys: [],
 };
 
 function api(path, options = {}) {
@@ -634,6 +635,8 @@ function taskToForm(task) {
     status: task.status,
     progress: task.progress,
     dependency_ids: task.dependency_ids.map(String),
+    contributor_team_ids: (task.contributor_team_ids || []).map(String),
+    jira_keys: [],
   };
 }
 
@@ -653,14 +656,34 @@ function LoadingShell({ copy }) {
   `;
 }
 
-function SummaryCard({ label, value, emphasis }) {
-  return html`
-    <div className="summary-card">
-      <div className="summary-label">${label}</div>
-      <div className="summary-value">${value}</div>
-      <div className="summary-emphasis">${emphasis}</div>
-    </div>
+function SummaryCard({ label, value, emphasis, onActivate }) {
+  const body = html`
+    <div className="summary-label">${label}</div>
+    <div className="summary-value">${value}</div>
+    <div className="summary-emphasis">${emphasis}</div>
   `;
+  if (typeof onActivate === "function") {
+    return html`
+      <button
+        type="button"
+        className="summary-card summary-card-button"
+        onClick=${onActivate}
+        aria-label=${`${label}: ${value}. ${emphasis}`}
+      >${body}</button>
+    `;
+  }
+  return html`<div className="summary-card">${body}</div>`;
+}
+
+function flashScrollTarget(targetId) {
+  const node = document.getElementById(targetId);
+  if (!node) return;
+  node.scrollIntoView({ behavior: "smooth", block: "start" });
+  node.classList.remove("scroll-flash");
+  // reflow so the animation restarts if triggered twice
+  void node.offsetWidth;
+  node.classList.add("scroll-flash");
+  window.setTimeout(() => node.classList.remove("scroll-flash"), 1400);
 }
 
 function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onCreateProject, submitting }) {
@@ -725,11 +748,41 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
   `;
 }
 
-function TaskForm({ teams, tasks, form, setForm, onSubmit, submitLabel, submitting }) {
+function TaskForm({ teams, tasks, form, setForm, onSubmit, submitLabel, submitting, showJiraPicker }) {
   const handleField = (key) => (event) => setForm({ ...form, [key]: event.target.value });
   const handleDependencies = (event) => {
     const values = Array.from(event.target.selectedOptions).map((option) => option.value);
     setForm({ ...form, dependency_ids: values });
+  };
+  const [showPicker, setShowPicker] = useState(false);
+  const [pickerError, setPickerError] = useState("");
+
+  const ownerId = form.team_id ? String(form.team_id) : "";
+  const contributorSet = new Set((form.contributor_team_ids || []).map(String));
+  const toggleContributor = (teamId) => {
+    const key = String(teamId);
+    const next = new Set(contributorSet);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    setForm({ ...form, contributor_team_ids: Array.from(next) });
+  };
+
+  const pendingKeys = form.jira_keys || [];
+  const appendPendingJira = (payload) => {
+    const key = (payload.jira_key || "").trim().toUpperCase();
+    if (!key) return;
+    if (pendingKeys.includes(key)) {
+      setShowPicker(false);
+      return;
+    }
+    setForm({ ...form, jira_keys: [...pendingKeys, key] });
+    setShowPicker(false);
+  };
+  const removePendingJira = (key) => {
+    setForm({ ...form, jira_keys: pendingKeys.filter((existing) => existing !== key) });
   };
 
   return html`
@@ -781,6 +834,32 @@ function TaskForm({ teams, tasks, form, setForm, onSubmit, submitLabel, submitti
         </div>
 
         <div className="field-wide">
+          <label>Contributing teams</label>
+          <div className="contrib-chips" role="group" aria-label="Contributing teams">
+            ${teams
+              .filter((team) => String(team.id) !== ownerId)
+              .map((team) => {
+                const selected = contributorSet.has(String(team.id));
+                return html`
+                  <button
+                    key=${team.id}
+                    type="button"
+                    className=${`contrib-chip ${selected ? "selected" : ""}`}
+                    aria-pressed=${selected}
+                    onClick=${() => toggleContributor(team.id)}
+                  >
+                    <span className="team-dot" style=${{ background: team.color }}></span>
+                    ${team.name}
+                  </button>
+                `;
+              })}
+            ${teams.filter((team) => String(team.id) !== ownerId).length === 0
+              ? html`<span className="help-text">No other teams available.</span>`
+              : null}
+          </div>
+        </div>
+
+        <div className="field-wide">
           <label htmlFor=${`${submitLabel}-dependencies`}>Upstream dependencies</label>
           <select id=${`${submitLabel}-dependencies`} multiple value=${form.dependency_ids} onChange=${handleDependencies}>
             ${tasks.map((task) => html`<option key=${task.id} value=${task.id}>${task.title}</option>`)}
@@ -792,9 +871,58 @@ function TaskForm({ teams, tasks, form, setForm, onSubmit, submitLabel, submitti
           <textarea id=${`${submitLabel}-description`} value=${form.description} onInput=${handleField("description")}></textarea>
         </div>
       </div>
+
+      ${showJiraPicker
+        ? html`
+            <div className="jira-pending">
+              <div className="jira-pending-header">
+                <strong>Jira stories to link on create</strong>
+                <button
+                  className="button-secondary"
+                  type="button"
+                  onClick=${() => { setPickerError(""); setShowPicker(true); }}
+                >Pick Jira story</button>
+              </div>
+              ${pendingKeys.length
+                ? html`
+                    <div className="jira-chip-row">
+                      ${pendingKeys.map(
+                        (key) => html`
+                          <div className="jira-chip" key=${key}>
+                            <span>${key}</span>
+                            <button
+                              type="button"
+                              className="jira-chip-remove"
+                              onClick=${() => removePendingJira(key)}
+                              aria-label=${`Remove ${key}`}
+                            >×</button>
+                          </div>
+                        `
+                      )}
+                    </div>
+                  `
+                : html`<div className="help-text">None yet — pick stories to link automatically after save.</div>`}
+            </div>
+          `
+        : null}
+
       <div className="actions">
             <button className="button-primary" type="submit" disabled=${submitting} aria-busy=${submitting}>${submitLabel}</button>
       </div>
+
+      ${showPicker
+        ? html`
+            <${JiraPickerModal}
+              title="Pick a Jira story to link on create"
+              teams=${null}
+              onClose=${() => setShowPicker(false)}
+              onLink=${appendPendingJira}
+              submitting=${false}
+              error=${pickerError}
+              setError=${setPickerError}
+            />
+          `
+        : null}
     </form>
   `;
 }
@@ -1058,9 +1186,187 @@ function GanttChart({ teams, tasks, onInlineSave, submitting }) {
   `;
 }
 
+function TeamManagerDrawer({ projectId, teams, onClose, onNotify, onChanged }) {
+  const [rows, setRows] = useState(teams);
+  const [editingId, setEditingId] = useState("");
+  const [editDraft, setEditDraft] = useState({ name: "", color: "#2563eb" });
+  const [rowError, setRowError] = useState({ id: null, message: "" });
+  const [addDraft, setAddDraft] = useState({ name: "", color: "#2563eb" });
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { setRows(teams); }, [teams]);
+
+  const beginEdit = (team) => {
+    setEditingId(String(team.id));
+    setEditDraft({ name: team.name, color: team.color });
+    setRowError({ id: null, message: "" });
+  };
+  const cancelEdit = () => {
+    setEditingId("");
+    setRowError({ id: null, message: "" });
+  };
+
+  const saveEdit = async (team) => {
+    setBusy(true);
+    setRowError({ id: null, message: "" });
+    try {
+      await api(`/api/projects/${projectId}/teams/${team.id}`, {
+        method: "PUT",
+        body: JSON.stringify(editDraft),
+      });
+      setEditingId("");
+      onNotify(`Team "${editDraft.name}" updated.`, "success");
+      await onChanged();
+    } catch (err) {
+      setRowError({ id: team.id, message: err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeTeam = async (team) => {
+    setBusy(true);
+    setRowError({ id: null, message: "" });
+    try {
+      await api(`/api/projects/${projectId}/teams/${team.id}`, { method: "DELETE" });
+      onNotify(`Team "${team.name}" removed.`, "success");
+      await onChanged();
+    } catch (err) {
+      setRowError({ id: team.id, message: err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addTeam = async (event) => {
+    event.preventDefault();
+    if (!addDraft.name.trim()) return;
+    setBusy(true);
+    try {
+      await api(`/api/projects/${projectId}/teams`, {
+        method: "POST",
+        body: JSON.stringify(addDraft),
+      });
+      onNotify(`Team "${addDraft.name}" added.`, "success");
+      setAddDraft({ name: "", color: "#2563eb" });
+      await onChanged();
+    } catch (err) {
+      onNotify(err.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return html`
+    <div
+      className="team-drawer-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Manage teams"
+      onClick=${onClose}
+    >
+      <div className="team-drawer" onClick=${(event) => event.stopPropagation()}>
+        <header className="team-drawer-header">
+          <h2 style=${{ margin: 0 }}>Teams</h2>
+          <button className="button-secondary" type="button" onClick=${onClose}>Close</button>
+        </header>
+        <p className="panel-copy" style=${{ margin: 0 }}>
+          Add, rename, recolor, or remove teams for this project. Deletion is blocked while a team still owns or contributes to tasks.
+        </p>
+
+        <div className="team-drawer-list">
+          ${rows.length === 0
+            ? html`<div className="empty-state">No teams yet — add one below.</div>`
+            : rows.map((team) => {
+                const isEditing = String(team.id) === editingId;
+                if (isEditing) {
+                  return html`
+                    <div className="team-drawer-edit" key=${team.id}>
+                      <input
+                        value=${editDraft.name}
+                        onInput=${(event) => setEditDraft({ ...editDraft, name: event.target.value })}
+                        aria-label="Team name"
+                      />
+                      <input
+                        type="color"
+                        value=${editDraft.color}
+                        onInput=${(event) => setEditDraft({ ...editDraft, color: event.target.value })}
+                        aria-label="Team color"
+                      />
+                      <button
+                        className="button-primary"
+                        type="button"
+                        onClick=${() => saveEdit(team)}
+                        disabled=${busy || !editDraft.name.trim()}
+                      >Save</button>
+                      <button
+                        className="button-secondary"
+                        type="button"
+                        onClick=${cancelEdit}
+                        disabled=${busy}
+                      >Cancel</button>
+                      ${rowError.id === team.id
+                        ? html`<div className="team-drawer-row-error">${rowError.message}</div>`
+                        : null}
+                    </div>
+                  `;
+                }
+                return html`
+                  <div className="team-drawer-row" key=${team.id}>
+                    <span className="team-dot" style=${{ background: team.color }}></span>
+                    <div>
+                      <strong>${team.name}</strong>
+                      <div className="help-text">${team.color}</div>
+                    </div>
+                    <div className="team-drawer-row-actions">
+                      <button
+                        className="button-secondary"
+                        type="button"
+                        onClick=${() => beginEdit(team)}
+                        disabled=${busy}
+                      >Edit</button>
+                      <button
+                        className="button-secondary"
+                        type="button"
+                        onClick=${() => removeTeam(team)}
+                        disabled=${busy}
+                      >Remove</button>
+                    </div>
+                    ${rowError.id === team.id
+                      ? html`<div className="team-drawer-row-error">${rowError.message}</div>`
+                      : null}
+                  </div>
+                `;
+              })}
+        </div>
+
+        <form className="team-drawer-add" onSubmit=${addTeam}>
+          <strong>Add a team</strong>
+          <div className="team-drawer-add-row">
+            <input
+              placeholder="Team name"
+              value=${addDraft.name}
+              onInput=${(event) => setAddDraft({ ...addDraft, name: event.target.value })}
+              required
+              aria-label="New team name"
+            />
+            <input
+              type="color"
+              value=${addDraft.color}
+              onInput=${(event) => setAddDraft({ ...addDraft, color: event.target.value })}
+              aria-label="New team color"
+            />
+            <button className="button-primary" type="submit" disabled=${busy || !addDraft.name.trim()}>Add</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
 function TaskTable({ tasks }) {
   return html`
-    <section className="table-shell">
+    <section className="table-shell" id="risk-register">
       <h2>Risk register</h2>
       <p className="panel-copy">The backend calculates delay and dependency pressure from the current schedule state.</p>
       <table>
@@ -1075,22 +1381,33 @@ function TaskTable({ tasks }) {
         </thead>
         <tbody>
           ${tasks.map(
-            (task) => html`
-              <tr key=${task.id}>
-                <td>
-                  <strong>${task.title}</strong>
-                  <div className="help-text">Current end: ${task.current_end || task.planned_end}</div>
-                </td>
-                <td>${task.team_name}</td>
-                <td>${humanizeStatus(task.status)}</td>
-                <td><span className=${`risk-badge ${task.risk_level}`}>${task.risk_level}</span></td>
-                <td>
-                  ${task.risk_reasons.length
-                    ? task.risk_reasons.map((reason) => html`<div key=${reason}>${reason}</div>`)
-                    : html`<span className="help-text">No active risk signals.</span>`}
-                </td>
-              </tr>
-            `
+            (task) => {
+              const contributors = task.contributor_teams || [];
+              return html`
+                <tr key=${task.id}>
+                  <td>
+                    <strong>${task.title}</strong>
+                    <div className="help-text">Current end: ${task.current_end || task.planned_end}</div>
+                  </td>
+                  <td>
+                    ${task.team_name}
+                    ${contributors.length
+                      ? html`<span
+                          className="team-plus-pill"
+                          title=${`Contributors: ${contributors.map((c) => c.name).join(", ")}`}
+                        >+${contributors.length}</span>`
+                      : null}
+                  </td>
+                  <td>${humanizeStatus(task.status)}</td>
+                  <td><span className=${`risk-badge ${task.risk_level}`}>${task.risk_level}</span></td>
+                  <td>
+                    ${task.risk_reasons.length
+                      ? task.risk_reasons.map((reason) => html`<div key=${reason}>${reason}</div>`)
+                      : html`<span className="help-text">No active risk signals.</span>`}
+                  </td>
+                </tr>
+              `;
+            }
           )}
         </tbody>
       </table>
@@ -1101,8 +1418,6 @@ function TaskTable({ tasks }) {
 function WorkspaceView({
   dashboard,
   onBack,
-  teamForm,
-  setTeamForm,
   taskForm,
   setTaskForm,
   editTaskId,
@@ -1111,16 +1426,17 @@ function WorkspaceView({
   setEditForm,
   csvFile,
   setCsvFile,
-  onTeamSubmit,
   onTaskSubmit,
   onUpdateSubmit,
   onCsvSubmit,
   onInlineSave,
   onNotify,
+  onTeamsChanged,
   submitting,
 }) {
   const teams = dashboard.teams;
   const tasks = dashboard.tasks;
+  const [teamDrawerOpen, setTeamDrawerOpen] = useState(false);
 
   return html`
     <div className="app-shell">
@@ -1134,14 +1450,34 @@ function WorkspaceView({
           </div>
         </div>
         <div className="hero-side">
-          <${SummaryCard} label="Teams" value=${dashboard.summary.total_teams} emphasis="Project-scoped ownership" />
-          <${SummaryCard} label="Tasks" value=${dashboard.summary.total_tasks} emphasis="Current project delivery scope" />
-          <${SummaryCard} label="At risk" value=${dashboard.summary.at_risk_tasks} emphasis="Needs schedule attention" />
-          <${SummaryCard} label="Delayed" value=${dashboard.summary.delayed_tasks} emphasis="Plan date already breached" />
+          <${SummaryCard}
+            label="Teams"
+            value=${dashboard.summary.total_teams}
+            emphasis="Manage project teams"
+            onActivate=${() => setTeamDrawerOpen(true)}
+          />
+          <${SummaryCard}
+            label="Tasks"
+            value=${dashboard.summary.total_tasks}
+            emphasis="Jump to the timeline"
+            onActivate=${() => flashScrollTarget("gantt-section")}
+          />
+          <${SummaryCard}
+            label="At risk"
+            value=${dashboard.summary.at_risk_tasks}
+            emphasis="Open the risk register"
+            onActivate=${() => flashScrollTarget("risk-register")}
+          />
+          <${SummaryCard}
+            label="Delayed"
+            value=${dashboard.summary.delayed_tasks}
+            emphasis="Jump to the timeline"
+            onActivate=${() => flashScrollTarget("gantt-section")}
+          />
         </div>
       </section>
 
-      <section>
+      <section id="gantt-section">
         <${GanttChart} teams=${teams} tasks=${tasks} onInlineSave=${onInlineSave} submitting=${submitting} />
         <${TaskTable} tasks=${tasks} />
       </section>
@@ -1149,26 +1485,6 @@ function WorkspaceView({
       <${JiraProjectPanel} projectId=${dashboard.project.id} teams=${teams} onMessage=${onNotify} />
 
       <section className="workspace-panels">
-        <article className="panel">
-          <h2>Team setup</h2>
-          <p className="panel-copy">Add teams under this project only.</p>
-          <form onSubmit=${onTeamSubmit}>
-            <div className="form-grid">
-              <div className="field">
-                <label htmlFor="team-name">Team name</label>
-                <input id="team-name" value=${teamForm.name} onInput=${(event) => setTeamForm({ ...teamForm, name: event.target.value })} required />
-              </div>
-              <div className="field">
-                <label htmlFor="team-color">Color</label>
-                <input id="team-color" type="color" value=${teamForm.color} onInput=${(event) => setTeamForm({ ...teamForm, color: event.target.value })} />
-              </div>
-            </div>
-            <div className="actions">
-              <button className="button-primary" type="submit" disabled=${submitting}>Add team</button>
-            </div>
-          </form>
-        </article>
-
         <article className="panel">
           <h2>Create task</h2>
           <p className="panel-copy">Create tasks beneath the timeline so review stays chart-first.</p>
@@ -1180,6 +1496,7 @@ function WorkspaceView({
             onSubmit=${onTaskSubmit}
             submitLabel="Create task"
             submitting=${submitting}
+            showJiraPicker=${true}
           />
         </article>
 
@@ -1201,6 +1518,7 @@ function WorkspaceView({
                   onSubmit=${onUpdateSubmit}
                   submitLabel="Save update"
                   submitting=${submitting}
+                  showJiraPicker=${false}
                 />
                 <${JiraTaskLinks} taskId=${Number(editTaskId)} onMessage=${onNotify} />
               `
@@ -1222,6 +1540,18 @@ function WorkspaceView({
           </form>
         </article>
       </section>
+
+      ${teamDrawerOpen
+        ? html`
+            <${TeamManagerDrawer}
+              projectId=${dashboard.project.id}
+              teams=${teams}
+              onClose=${() => setTeamDrawerOpen(false)}
+              onNotify=${onNotify}
+              onChanged=${onTeamsChanged}
+            />
+          `
+        : null}
     </div>
   `;
 }
@@ -1232,7 +1562,6 @@ function App() {
   const [dashboard, setDashboard] = useState(null);
 
   const [projectForm, setProjectForm] = useState(DEFAULT_PROJECT);
-  const [teamForm, setTeamForm] = useState(DEFAULT_TEAM);
   const [taskForm, setTaskForm] = useState(DEFAULT_TASK);
   const [editTaskId, setEditTaskId] = useState("");
   const [editForm, setEditForm] = useState(DEFAULT_TASK);
@@ -1347,14 +1676,6 @@ function App() {
     }
   };
 
-  const handleTeamSubmit = (event) => {
-    event.preventDefault();
-    submitJson(`/api/projects/${selectedProjectId}/teams`, "POST", teamForm, {
-      message: "Team added.",
-      reset: () => setTeamForm(DEFAULT_TEAM),
-    });
-  };
-
   const handleTaskSubmit = (event) => {
     event.preventDefault();
     submitJson(
@@ -1365,12 +1686,17 @@ function App() {
         team_id: Number(taskForm.team_id),
         progress: Number(taskForm.progress),
         dependency_ids: taskForm.dependency_ids.map(Number),
+        contributor_team_ids: (taskForm.contributor_team_ids || []).map(Number),
+        jira_keys: taskForm.jira_keys || [],
         current_start: taskForm.current_start || null,
         current_end: taskForm.current_end || null,
       },
       {
         message: "Task created.",
-        reset: () => setTaskForm({ ...DEFAULT_TASK, team_id: dashboard.teams[0] ? String(dashboard.teams[0].id) : "" }),
+        reset: () => setTaskForm({
+          ...DEFAULT_TASK,
+          team_id: dashboard.teams[0] ? String(dashboard.teams[0].id) : "",
+        }),
       }
     );
   };
@@ -1397,6 +1723,7 @@ function App() {
       team_id: Number(editForm.team_id),
       progress: Number(editForm.progress),
       dependency_ids: editForm.dependency_ids.map(Number),
+      contributor_team_ids: (editForm.contributor_team_ids || []).map(Number),
       current_start: editForm.current_start || null,
       current_end: editForm.current_end || null,
     });
@@ -1445,8 +1772,6 @@ function App() {
             <${WorkspaceView}
               dashboard=${dashboard}
               onBack=${() => { setSelectedProjectId(null); setDashboard(null); setEditTaskId(""); }}
-              teamForm=${teamForm}
-              setTeamForm=${setTeamForm}
               taskForm=${taskForm}
               setTaskForm=${setTaskForm}
               editTaskId=${editTaskId}
@@ -1455,12 +1780,12 @@ function App() {
               setEditForm=${setEditForm}
               csvFile=${csvFile}
               setCsvFile=${setCsvFile}
-              onTeamSubmit=${handleTeamSubmit}
               onTaskSubmit=${handleTaskSubmit}
               onUpdateSubmit=${handleUpdateSubmit}
               onCsvSubmit=${handleCsvSubmit}
               onInlineSave=${handleUpdateTask}
               onNotify=${(text, tone) => { setMessage(text); setMessageTone(tone || "success"); }}
+              onTeamsChanged=${refreshWorkspace}
               submitting=${submitting}
             />
           `

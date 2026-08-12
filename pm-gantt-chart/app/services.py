@@ -193,6 +193,50 @@ def create_team(db: Session, project_id: int, payload: schemas.TeamCreate) -> mo
     return team
 
 
+class TeamInUseError(ValueError):
+    """Raised when trying to delete a team that still owns or contributes to tasks."""
+
+
+def update_team(
+    db: Session, project_id: int, team: models.Team, payload: schemas.TeamUpdate
+) -> models.Team:
+    if team.project_id != project_id:
+        raise ValueError("Team does not belong to the selected project.")
+
+    updates = payload.model_dump(exclude_unset=True)
+    if "name" in updates and updates["name"] and updates["name"] != team.name:
+        clash = db.scalar(
+            select(models.Team).where(
+                models.Team.project_id == project_id,
+                models.Team.name == updates["name"],
+                models.Team.id != team.id,
+            )
+        )
+        if clash is not None:
+            raise ValueError("Another team in this project already uses that name.")
+    for field, value in updates.items():
+        if value is not None:
+            setattr(team, field, value)
+    db.commit()
+    db.refresh(team)
+    return team
+
+
+def delete_team(db: Session, project_id: int, team: models.Team) -> None:
+    if team.project_id != project_id:
+        raise ValueError("Team does not belong to the selected project.")
+    if team.tasks:
+        raise TeamInUseError(
+            f"Team has {len(team.tasks)} assigned task(s); reassign them first."
+        )
+    if team.contributing_tasks:
+        raise TeamInUseError(
+            f"Team is a contributor on {len(team.contributing_tasks)} task(s); remove it there first."
+        )
+    db.delete(team)
+    db.commit()
+
+
 def _task_finish(task: models.Task) -> date:
     return task.current_end or task.planned_end
 
@@ -243,6 +287,7 @@ def list_tasks(db: Session, project_id: int) -> List[models.Task]:
         .where(models.Task.project_id == project_id)
         .options(
             selectinload(models.Task.team),
+            selectinload(models.Task.contributor_teams),
             selectinload(models.Task.incoming_links).selectinload(
                 models.TaskDependency.upstream_task
             ),
@@ -254,6 +299,7 @@ def list_tasks(db: Session, project_id: int) -> List[models.Task]:
 
 def serialize_task(task: models.Task) -> schemas.TaskRead:
     risk = calculate_risk(task)
+    contributors = sorted(task.contributor_teams, key=lambda team: team.name)
     return schemas.TaskRead(
         id=task.id,
         project_id=task.project_id,
@@ -269,6 +315,8 @@ def serialize_task(task: models.Task) -> schemas.TaskRead:
         status=task.status,
         progress=task.progress,
         dependency_ids=[link.upstream_task_id for link in task.incoming_links],
+        contributor_team_ids=[team.id for team in contributors],
+        contributor_teams=[schemas.TeamRef.model_validate(team) for team in contributors],
         delayed=risk.delayed,
         at_risk=risk.at_risk,
         risk_level=risk.risk_level,
@@ -301,6 +349,28 @@ def replace_dependencies(db: Session, task: models.Task, dependency_ids: Iterabl
         )
 
 
+def replace_contributor_teams(
+    db: Session, task: models.Task, team_ids: Iterable[int]
+) -> None:
+    unique_ids = list(dict.fromkeys(team_ids))
+    if not unique_ids:
+        task.contributor_teams = []
+        return
+    teams = list(
+        db.scalars(select(models.Team).where(models.Team.id.in_(unique_ids))).all()
+    )
+    found = {team.id for team in teams}
+    missing = [tid for tid in unique_ids if tid not in found]
+    if missing:
+        raise ValueError(f"Contributor team(s) not found: {missing}")
+    for team in teams:
+        if team.project_id != task.project_id:
+            raise ValueError("Contributor teams must belong to the same project.")
+    if task.team_id in unique_ids:
+        raise ValueError("The owning team cannot also be listed as a contributor.")
+    task.contributor_teams = teams
+
+
 def create_task(db: Session, project_id: int, payload: schemas.TaskCreate) -> models.Task:
     team = db.get(models.Team, payload.team_id)
     if team is None or team.project_id != project_id:
@@ -321,6 +391,7 @@ def create_task(db: Session, project_id: int, payload: schemas.TaskCreate) -> mo
     db.add(task)
     db.flush()
     replace_dependencies(db, task, payload.dependency_ids)
+    replace_contributor_teams(db, task, payload.contributor_team_ids)
     db.commit()
     db.refresh(task)
     return task
@@ -334,6 +405,7 @@ def update_task(
 
     updates = payload.model_dump(exclude_unset=True)
     dependency_ids = updates.pop("dependency_ids", None)
+    contributor_ids = updates.pop("contributor_team_ids", None)
 
     if "team_id" in updates:
         team = db.get(models.Team, updates["team_id"])
@@ -346,6 +418,8 @@ def update_task(
     db.flush()
     if dependency_ids is not None:
         replace_dependencies(db, task, dependency_ids)
+    if contributor_ids is not None:
+        replace_contributor_teams(db, task, contributor_ids)
 
     db.commit()
     db.refresh(task)

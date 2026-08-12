@@ -4,17 +4,36 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import (
+    Column,
     Date,
     DateTime,
     ForeignKey,
     Integer,
     String,
+    Table,
     Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
+
+
+# Contributing teams (many-to-many); the primary owner remains Task.team_id.
+task_contributor_teams = Table(
+    "task_contributor_teams",
+    Base.metadata,
+    Column(
+        "task_id",
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "team_id",
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
 
 
 class Project(Base):
@@ -44,6 +63,11 @@ class Team(Base):
 
     project: Mapped[Project] = relationship("Project", back_populates="teams")
     tasks: Mapped[List["Task"]] = relationship("Task", back_populates="team")
+    contributing_tasks: Mapped[List["Task"]] = relationship(
+        "Task",
+        secondary=task_contributor_teams,
+        back_populates="contributor_teams",
+    )
 
 
 class TaskDependency(Base):
@@ -99,6 +123,11 @@ class Task(Base):
     )
     jira_links: Mapped[List["TaskJiraLink"]] = relationship(
         "TaskJiraLink", back_populates="task", cascade="all, delete-orphan"
+    )
+    contributor_teams: Mapped[List[Team]] = relationship(
+        "Team",
+        secondary=task_contributor_teams,
+        back_populates="contributing_tasks",
     )
 
 

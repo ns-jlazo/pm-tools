@@ -33,9 +33,24 @@ class TeamCreate(BaseModel):
     color: str = Field(default="#2563eb", min_length=4, max_length=20)
 
 
+class TeamUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    color: Optional[str] = Field(default=None, min_length=4, max_length=20)
+
+
 class TeamRead(TeamCreate):
     id: int
     project_id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamRef(BaseModel):
+    """Minimal team payload embedded in TaskRead for contributor rendering."""
+
+    id: int
+    name: str
+    color: str
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -52,10 +67,11 @@ class TaskBase(BaseModel):
     status: str = Field(default="planned", max_length=30)
     progress: int = Field(default=0, ge=0, le=100)
     dependency_ids: List[int] = Field(default_factory=list)
+    contributor_team_ids: List[int] = Field(default_factory=list)
 
 
 class TaskCreate(TaskBase):
-    pass
+    jira_keys: List[str] = Field(default_factory=list)
 
 
 class TaskUpdate(BaseModel):
@@ -69,6 +85,7 @@ class TaskUpdate(BaseModel):
     status: Optional[str] = Field(default=None, max_length=30)
     progress: Optional[int] = Field(default=None, ge=0, le=100)
     dependency_ids: Optional[List[int]] = None
+    contributor_team_ids: Optional[List[int]] = None
 
 
 class TaskRead(BaseModel):
@@ -86,6 +103,8 @@ class TaskRead(BaseModel):
     status: str
     progress: int
     dependency_ids: List[int]
+    contributor_team_ids: List[int]
+    contributor_teams: List[TeamRef]
     delayed: bool
     at_risk: bool
     risk_level: str

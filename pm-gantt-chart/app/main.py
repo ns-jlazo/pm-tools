@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 
 from . import models, schemas, services
 from .database import Base, SessionLocal, engine, get_db
+from .jira.auth import JiraNotConfigured
 from .jira.routes import router as jira_router
+from .jira import service as jira_service
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -109,6 +111,46 @@ def create_project_team(
     return schemas.TeamRead.model_validate(team)
 
 
+@app.put(
+    "/api/projects/{project_id}/teams/{team_id}",
+    response_model=schemas.TeamRead,
+)
+def update_project_team(
+    project_id: int,
+    team_id: int,
+    payload: schemas.TeamUpdate,
+    db: Session = Depends(get_db),
+) -> schemas.TeamRead:
+    team = db.get(models.Team, team_id)
+    if team is None or team.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Team not found.")
+    try:
+        services.update_team(db, project_id, team, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return schemas.TeamRead.model_validate(team)
+
+
+@app.delete(
+    "/api/projects/{project_id}/teams/{team_id}",
+    status_code=204,
+    response_class=Response,
+)
+def delete_project_team(
+    project_id: int, team_id: int, db: Session = Depends(get_db)
+) -> Response:
+    team = db.get(models.Team, team_id)
+    if team is None or team.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Team not found.")
+    try:
+        services.delete_team(db, project_id, team)
+    except services.TeamInUseError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(status_code=204)
+
+
 @app.get("/api/projects/{project_id}/tasks", response_model=List[schemas.TaskRead])
 def get_project_tasks(
     project_id: int, db: Session = Depends(get_db)
@@ -134,6 +176,20 @@ def create_project_task(
         task = services.create_task(db, project_id, scoped_payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Best-effort: link any Jira keys the user picked at create time; skip failures.
+    for raw_key in scoped_payload.jira_keys or []:
+        key = (raw_key or "").strip()
+        if not key:
+            continue
+        try:
+            jira_service.link_issue_to_task(
+                db, task.id, schemas.JiraLinkCreate(jira_key=key)
+            )
+        except JiraNotConfigured:
+            break
+        except Exception:  # noqa: BLE001 - link is best-effort
+            continue
 
     refreshed = next(item for item in services.list_tasks(db, project_id) if item.id == task.id)
     return services.serialize_task(refreshed)

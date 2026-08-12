@@ -650,7 +650,7 @@ th {
 .workspace-panels {
   margin-top: 24px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
 }
 
@@ -1044,4 +1044,211 @@ th {
   text-decoration: none;
   color: var(--accent);
   min-width: 90px;
+}
+
+/* ---------------- Summary cards as nav buttons ---------------- */
+
+.summary-card-button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.summary-card-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 22px 60px rgba(15, 23, 42, 0.16);
+  border-color: rgba(15, 118, 110, 0.35);
+}
+
+.summary-card-button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@keyframes scroll-flash-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0.55); }
+  60%  { box-shadow: 0 0 0 18px rgba(15, 118, 110, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0); }
+}
+
+.scroll-flash {
+  animation: scroll-flash-pulse 1.2s ease-out 1;
+}
+
+/* ---------------- Team management drawer ---------------- */
+
+.team-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  z-index: 45;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.team-drawer {
+  width: min(420px, 100%);
+  height: 100%;
+  background: var(--surface-strong);
+  box-shadow: var(--shadow);
+  padding: 22px 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  animation: team-drawer-in 180ms ease-out;
+}
+
+@keyframes team-drawer-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+
+.team-drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.team-drawer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.team-drawer-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.team-drawer-row .team-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+}
+
+.team-drawer-row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.team-drawer-edit {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.team-drawer-row-error {
+  grid-column: 1 / -1;
+  color: var(--danger);
+  background: rgba(185, 28, 28, 0.08);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+}
+
+.team-drawer-add {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.team-drawer-add-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ---------------- Contributing teams multi-select ---------------- */
+
+.contrib-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+  min-height: 44px;
+}
+
+.contrib-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.85);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.contrib-chip.selected {
+  background: rgba(15, 118, 110, 0.12);
+  border-color: rgba(15, 118, 110, 0.45);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.contrib-chip .team-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.team-plus-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.1);
+  border: 1px solid rgba(15, 118, 110, 0.25);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: help;
+}
+
+/* ---------------- Create-form Jira picker (pending, pre-save) ---------------- */
+
+.jira-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.jira-pending-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .workspace-panels {
+    grid-template-columns: 1fr;
+  }
 }
