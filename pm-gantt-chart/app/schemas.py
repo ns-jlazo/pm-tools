@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -112,3 +112,67 @@ class CsvImportResult(BaseModel):
     imported_tasks: int
     created_teams: int
     errors: List[str]
+
+
+class JiraSearchResult(BaseModel):
+    """Slimmed Jira issue payload used by search + link responses."""
+
+    key: str
+    url: str
+    issue_type: str
+    summary: str
+    status: str
+    status_category: str
+    assignee_name: str = ""
+    assignee_email: str = ""
+    parent_key: Optional[str] = None
+    due_date: Optional[date] = None
+
+
+class JiraSearchResponse(BaseModel):
+    total: int
+    issues: List[JiraSearchResult]
+    next_page_token: Optional[str] = None
+    is_last: bool = True
+
+
+class JiraIssueRead(JiraSearchResult):
+    id: int
+    synced_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class JiraLinkCreate(BaseModel):
+    jira_key: str = Field(min_length=1, max_length=60)
+    team_id: Optional[int] = None
+
+
+class ProjectJiraLinkRead(BaseModel):
+    id: int
+    project_id: int
+    team_id: Optional[int]
+    linked_at: datetime
+    issue: JiraIssueRead
+
+
+class TaskJiraLinkRead(BaseModel):
+    id: int
+    task_id: int
+    linked_at: datetime
+    issue: JiraIssueRead
+
+
+class ProjectJiraLinksGrouped(BaseModel):
+    """Payload for the project Jira panel: links grouped by team_id (None => unassigned)."""
+
+    project_id: int
+    links: List[ProjectJiraLinkRead]
+    stale: bool
+    synced_at: Optional[datetime] = None
+
+
+class JiraHealth(BaseModel):
+    configured: bool
+    url: Optional[str] = None
+    detail: Optional[str] = None

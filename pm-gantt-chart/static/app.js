@@ -65,6 +65,563 @@ function humanizeStatus(status) {
   return status.replaceAll("_", " ");
 }
 
+function jiraStatusClass(category) {
+  const key = (category || "").toLowerCase();
+  if (key === "done") return "jira-status-pill done";
+  if (key === "indeterminate" || key === "in-progress") return "jira-status-pill in-progress";
+  return "jira-status-pill todo";
+}
+
+function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, setError }) {
+  const [mode, setMode] = useState("search");
+  const [jql, setJql] = useState("");
+  const [keyword, setKeyword] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [keyInput, setKeyInput] = useState("");
+  const [pickedIssue, setPickedIssue] = useState(null);
+  const [selectedTeamId, setSelectedTeamId] = useState("");
+
+  const runSearch = async (event) => {
+    if (event) event.preventDefault();
+    const trimmedJql = jql.trim();
+    const trimmedKeyword = keyword.trim();
+    let query = trimmedJql;
+    if (!query && trimmedKeyword) {
+      const safe = trimmedKeyword.replace(/"/g, '\\"');
+      query = `text ~ "${safe}" ORDER BY updated DESC`;
+    }
+    if (!query) {
+      setError("Enter a JQL query or a keyword to search.");
+      return;
+    }
+    setError("");
+    setSearching(true);
+    try {
+      const payload = await api(`/api/jira/search?jql=${encodeURIComponent(query)}&limit=25`);
+      setResults(payload.issues || []);
+    } catch (err) {
+      setError(err.message);
+      setResults([]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const validateKey = async (event) => {
+    if (event) event.preventDefault();
+    const key = keyInput.trim().toUpperCase();
+    if (!key) {
+      setError("Paste a Jira key like ABC-123.");
+      return;
+    }
+    setError("");
+    setSearching(true);
+    try {
+      const issue = await api(`/api/jira/issues/${encodeURIComponent(key)}`);
+      setPickedIssue(issue);
+    } catch (err) {
+      setError(err.message);
+      setPickedIssue(null);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const confirmLink = (issue) => {
+    const payload = { jira_key: issue.key };
+    if (teams && selectedTeamId) {
+      payload.team_id = Number(selectedTeamId);
+    }
+    onLink(payload);
+  };
+
+  return html`
+    <div className="jira-modal-backdrop" role="dialog" aria-modal="true" onClick=${onClose}>
+      <div className="jira-modal" onClick=${(event) => event.stopPropagation()}>
+        <header className="jira-modal-header">
+          <h3>${title}</h3>
+          <button className="button-secondary" type="button" onClick=${onClose}>Close</button>
+        </header>
+
+        <div className="jira-modal-tabs">
+          <button
+            type="button"
+            className=${`jira-tab ${mode === "search" ? "active" : ""}`}
+            onClick=${() => setMode("search")}
+          >
+            Search
+          </button>
+          <button
+            type="button"
+            className=${`jira-tab ${mode === "key" ? "active" : ""}`}
+            onClick=${() => setMode("key")}
+          >
+            Paste key
+          </button>
+        </div>
+
+        ${teams && teams.length
+          ? html`
+              <div className="field-wide jira-team-picker">
+                <label htmlFor="jira-team-select">Assign to team (optional)</label>
+                <select
+                  id="jira-team-select"
+                  value=${selectedTeamId}
+                  onChange=${(event) => setSelectedTeamId(event.target.value)}
+                >
+                  <option value="">Unassigned</option>
+                  ${teams.map(
+                    (team) => html`<option key=${team.id} value=${team.id}>${team.name}</option>`
+                  )}
+                </select>
+              </div>
+            `
+          : null}
+
+        ${mode === "search"
+          ? html`
+              <form onSubmit=${runSearch} className="jira-search-form">
+                <div className="field-wide">
+                  <label htmlFor="jira-keyword">Keyword</label>
+                  <input
+                    id="jira-keyword"
+                    placeholder="Search summary/description"
+                    value=${keyword}
+                    onInput=${(event) => setKeyword(event.target.value)}
+                  />
+                </div>
+                <div className="field-wide">
+                  <label htmlFor="jira-jql">JQL (advanced, overrides keyword)</label>
+                  <input
+                    id="jira-jql"
+                    placeholder='project = "PROJ" AND issuetype = Epic'
+                    value=${jql}
+                    onInput=${(event) => setJql(event.target.value)}
+                  />
+                </div>
+                <div className="actions">
+                  <button className="button-primary" type="submit" disabled=${searching}>
+                    ${searching ? "Searching…" : "Search Jira"}
+                  </button>
+                </div>
+              </form>
+              ${results.length
+                ? html`
+                    <div className="jira-results">
+                      ${results.map(
+                        (issue) => html`
+                          <div className="jira-result-row" key=${issue.key}>
+                            <div className="jira-result-main">
+                              <a
+                                className="jira-result-key"
+                                href=${issue.url}
+                                target="_blank"
+                                rel="noreferrer"
+                              >${issue.key}</a>
+                              <span className=${jiraStatusClass(issue.status_category)}>
+                                ${issue.status}
+                              </span>
+                              <span className="jira-result-type">${issue.issue_type}</span>
+                            </div>
+                            <div className="jira-result-summary">${issue.summary}</div>
+                            <div className="actions">
+                              <button
+                                className="button-primary"
+                                type="button"
+                                disabled=${submitting}
+                                onClick=${() => confirmLink(issue)}
+                              >
+                                Link
+                              </button>
+                            </div>
+                          </div>
+                        `
+                      )}
+                    </div>
+                  `
+                : html`<div className="empty-state">No results yet — run a search.</div>`}
+            `
+          : html`
+              <form onSubmit=${validateKey} className="jira-key-form">
+                <div className="field-wide">
+                  <label htmlFor="jira-key-input">Jira key</label>
+                  <input
+                    id="jira-key-input"
+                    placeholder="ABC-123"
+                    value=${keyInput}
+                    onInput=${(event) => setKeyInput(event.target.value)}
+                  />
+                </div>
+                <div className="actions">
+                  <button className="button-secondary" type="submit" disabled=${searching}>
+                    ${searching ? "Checking…" : "Validate"}
+                  </button>
+                  ${pickedIssue
+                    ? html`
+                        <button
+                          className="button-primary"
+                          type="button"
+                          disabled=${submitting}
+                          onClick=${() => confirmLink(pickedIssue)}
+                        >
+                          Link ${pickedIssue.key}
+                        </button>
+                      `
+                    : null}
+                </div>
+              </form>
+              ${pickedIssue
+                ? html`
+                    <div className="jira-result-row">
+                      <div className="jira-result-main">
+                        <a
+                          className="jira-result-key"
+                          href=${pickedIssue.url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >${pickedIssue.key}</a>
+                        <span className=${jiraStatusClass(pickedIssue.status_category)}>
+                          ${pickedIssue.status}
+                        </span>
+                        <span className="jira-result-type">${pickedIssue.issue_type}</span>
+                      </div>
+                      <div className="jira-result-summary">${pickedIssue.summary}</div>
+                    </div>
+                  `
+                : null}
+            `}
+        ${error ? html`<div className="jira-modal-error">${error}</div>` : null}
+      </div>
+    </div>
+  `;
+}
+
+function JiraEpicChildren({ epicKey }) {
+  const [children, setChildren] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await api(`/api/jira/issues/${encodeURIComponent(epicKey)}/children`);
+      setChildren(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && children === null && !loading) {
+      load();
+    }
+  };
+
+  return html`
+    <div className="jira-children">
+      <button className="jira-children-toggle" type="button" onClick=${toggle}>
+        ${open ? "Hide stories" : "Show stories"}
+      </button>
+      ${open
+        ? loading
+          ? html`<div className="help-text">Loading stories…</div>`
+          : error
+            ? html`<div className="jira-modal-error">${error}</div>`
+            : children && children.length
+              ? html`
+                  <ul className="jira-children-list">
+                    ${children.map(
+                      (child) => html`
+                        <li key=${child.key}>
+                          <a href=${child.url} target="_blank" rel="noreferrer">${child.key}</a>
+                          <span className=${jiraStatusClass(child.status_category)}>
+                            ${child.status}
+                          </span>
+                          <span>${child.summary}</span>
+                        </li>
+                      `
+                    )}
+                  </ul>
+                `
+              : html`<div className="help-text">No child stories in Jira.</div>`
+        : null}
+    </div>
+  `;
+}
+
+function JiraProjectPanel({ projectId, teams, onMessage }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [pickerError, setPickerError] = useState("");
+
+  const load = async () => {
+    if (!projectId) return;
+    setLoading(true);
+    try {
+      const payload = await api(`/api/projects/${projectId}/jira`);
+      setData(payload);
+    } catch (err) {
+      onMessage(err.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setData(null);
+    load();
+  }, [projectId]);
+
+  const forceSync = async () => {
+    setLoading(true);
+    try {
+      const payload = await api(`/api/projects/${projectId}/jira/sync`, { method: "POST" });
+      setData(payload);
+      onMessage("Refreshed epics from Jira.", "success");
+    } catch (err) {
+      onMessage(err.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const linkEpic = async (payload) => {
+    setSubmitting(true);
+    setPickerError("");
+    try {
+      await api(`/api/projects/${projectId}/jira/links`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setShowPicker(false);
+      onMessage(`Linked ${payload.jira_key} to project.`, "success");
+      await load();
+    } catch (err) {
+      setPickerError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const unlink = async (link) => {
+    setLoading(true);
+    try {
+      await api(`/api/projects/${projectId}/jira/links/${link.id}`, { method: "DELETE" });
+      onMessage(`Unlinked ${link.issue.key}.`, "success");
+      await load();
+    } catch (err) {
+      onMessage(err.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const groups = useMemo(() => {
+    const bucket = new Map();
+    for (const team of teams) bucket.set(team.id, { team, links: [] });
+    bucket.set(null, { team: null, links: [] });
+    for (const link of (data && data.links) || []) {
+      const key = link.team_id ?? null;
+      if (!bucket.has(key)) bucket.set(key, { team: null, links: [] });
+      bucket.get(key).links.push(link);
+    }
+    return Array.from(bucket.values()).filter(
+      (group) => group.team || group.links.length
+    );
+  }, [teams, data]);
+
+  return html`
+    <article className="panel jira-panel">
+      <div className="jira-panel-header">
+        <div>
+          <h2>Jira epics</h2>
+          <p className="panel-copy">
+            Link Jira epics to this project. Stories under each epic are visible in a read-only list.
+          </p>
+        </div>
+        <div className="actions">
+          <button className="button-secondary" type="button" onClick=${forceSync} disabled=${loading}>
+            ${loading ? "Refreshing…" : "Refresh"}
+          </button>
+          <button className="button-primary" type="button" onClick=${() => { setPickerError(""); setShowPicker(true); }}>
+            Link epic
+          </button>
+        </div>
+      </div>
+
+      ${data && data.stale ? html`<div className="help-text">Showing cached data — refresh failed.</div>` : null}
+
+      ${groups.map(
+        (group) => html`
+          <div className="jira-team-group" key=${group.team ? group.team.id : "unassigned"}>
+            <div className="jira-team-heading">
+              ${group.team
+                ? html`
+                    <span className="team-dot" style=${{ background: group.team.color }}></span>
+                    <strong>${group.team.name}</strong>
+                  `
+                : html`<strong>Unassigned</strong>`}
+              <span className="tiny-pill">${group.links.length}</span>
+            </div>
+            ${group.links.length
+              ? group.links.map(
+                  (link) => html`
+                    <div className="jira-link-row" key=${link.id}>
+                      <div className="jira-link-main">
+                        <a href=${link.issue.url} target="_blank" rel="noreferrer" className="jira-result-key">
+                          ${link.issue.key}
+                        </a>
+                        <span className=${jiraStatusClass(link.issue.status_category)}>${link.issue.status}</span>
+                        <span className="jira-result-type">${link.issue.issue_type}</span>
+                        ${link.issue.assignee_name
+                          ? html`<span className="help-text">${link.issue.assignee_name}</span>`
+                          : null}
+                      </div>
+                      <div className="jira-link-summary">${link.issue.summary}</div>
+                      <${JiraEpicChildren} epicKey=${link.issue.key} />
+                      <div className="actions">
+                        <button className="button-secondary" type="button" onClick=${() => unlink(link)}>
+                          Unlink
+                        </button>
+                      </div>
+                    </div>
+                  `
+                )
+              : html`<div className="empty-state">No epics linked yet.</div>`}
+          </div>
+        `
+      )}
+
+      ${showPicker
+        ? html`
+            <${JiraPickerModal}
+              title="Link Jira epic to project"
+              teams=${teams}
+              onClose=${() => setShowPicker(false)}
+              onLink=${linkEpic}
+              submitting=${submitting}
+              error=${pickerError}
+              setError=${setPickerError}
+            />
+          `
+        : null}
+    </article>
+  `;
+}
+
+function JiraTaskLinks({ taskId, onMessage }) {
+  const [links, setLinks] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [pickerError, setPickerError] = useState("");
+
+  const load = async () => {
+    if (!taskId) return;
+    setLoading(true);
+    try {
+      const payload = await api(`/api/tasks/${taskId}/jira`);
+      setLinks(payload);
+    } catch (err) {
+      onMessage(err.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setLinks([]);
+    load();
+  }, [taskId]);
+
+  const linkIssue = async (payload) => {
+    setSubmitting(true);
+    setPickerError("");
+    try {
+      await api(`/api/tasks/${taskId}/jira/links`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setShowPicker(false);
+      onMessage(`Linked ${payload.jira_key} to task.`, "success");
+      await load();
+    } catch (err) {
+      setPickerError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const unlink = async (link) => {
+    setLoading(true);
+    try {
+      await api(`/api/tasks/${taskId}/jira/links/${link.id}`, { method: "DELETE" });
+      onMessage(`Unlinked ${link.issue.key}.`, "success");
+      await load();
+    } catch (err) {
+      onMessage(err.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return html`
+    <div className="jira-task-links">
+      <div className="jira-task-header">
+        <strong>Jira issues</strong>
+        <button className="button-secondary" type="button" onClick=${() => { setPickerError(""); setShowPicker(true); }}>
+          Link issue
+        </button>
+      </div>
+      ${loading && !links.length
+        ? html`<div className="help-text">Loading…</div>`
+        : links.length
+          ? html`
+              <div className="jira-chip-row">
+                ${links.map(
+                  (link) => html`
+                    <div className="jira-chip" key=${link.id}>
+                      <a href=${link.issue.url} target="_blank" rel="noreferrer">${link.issue.key}</a>
+                      <span className=${jiraStatusClass(link.issue.status_category)}>${link.issue.status}</span>
+                      <span className="jira-chip-summary">${link.issue.summary}</span>
+                      <button
+                        type="button"
+                        className="jira-chip-remove"
+                        onClick=${() => unlink(link)}
+                        aria-label=${`Unlink ${link.issue.key}`}
+                      >×</button>
+                    </div>
+                  `
+                )}
+              </div>
+            `
+          : html`<div className="help-text">No Jira issues linked to this task yet.</div>`}
+      ${showPicker
+        ? html`
+            <${JiraPickerModal}
+              title="Link Jira issue to task"
+              teams=${null}
+              onClose=${() => setShowPicker(false)}
+              onLink=${linkIssue}
+              submitting=${submitting}
+              error=${pickerError}
+              setError=${setPickerError}
+            />
+          `
+        : null}
+    </div>
+  `;
+}
+
 function taskToForm(task) {
   return {
     title: task.title,
@@ -559,6 +1116,7 @@ function WorkspaceView({
   onUpdateSubmit,
   onCsvSubmit,
   onInlineSave,
+  onNotify,
   submitting,
 }) {
   const teams = dashboard.teams;
@@ -587,6 +1145,8 @@ function WorkspaceView({
         <${GanttChart} teams=${teams} tasks=${tasks} onInlineSave=${onInlineSave} submitting=${submitting} />
         <${TaskTable} tasks=${tasks} />
       </section>
+
+      <${JiraProjectPanel} projectId=${dashboard.project.id} teams=${teams} onMessage=${onNotify} />
 
       <section className="workspace-panels">
         <article className="panel">
@@ -642,6 +1202,7 @@ function WorkspaceView({
                   submitLabel="Save update"
                   submitting=${submitting}
                 />
+                <${JiraTaskLinks} taskId=${Number(editTaskId)} onMessage=${onNotify} />
               `
             : html`<div className="empty-state">Add a task first to start tracking updates.</div>`}
         </article>
@@ -899,6 +1460,7 @@ function App() {
               onUpdateSubmit=${handleUpdateSubmit}
               onCsvSubmit=${handleCsvSubmit}
               onInlineSave=${handleUpdateTask}
+              onNotify=${(text, tone) => { setMessage(text); setMessageTone(tone || "success"); }}
               submitting=${submitting}
             />
           `

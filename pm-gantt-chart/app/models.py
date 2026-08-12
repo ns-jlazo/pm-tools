@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import Date, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -88,3 +97,74 @@ class Task(Base):
         back_populates="downstream_task",
         cascade="all, delete-orphan",
     )
+    jira_links: Mapped[List["TaskJiraLink"]] = relationship(
+        "TaskJiraLink", back_populates="task", cascade="all, delete-orphan"
+    )
+
+
+class JiraIssue(Base):
+    __tablename__ = "jira_issues"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    jira_key: Mapped[str] = mapped_column(String(60), unique=True, index=True, nullable=False)
+    jira_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    issue_type: Mapped[str] = mapped_column(String(60), default="", nullable=False)
+    summary: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    status_category: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    assignee_name: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    assignee_email: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    parent_key: Mapped[Optional[str]] = mapped_column(String(60), index=True)
+    due_date: Mapped[Optional[Date]] = mapped_column(Date)
+    raw_json: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    project_links: Mapped[List["ProjectJiraLink"]] = relationship(
+        "ProjectJiraLink", back_populates="issue", cascade="all, delete-orphan"
+    )
+    task_links: Mapped[List["TaskJiraLink"]] = relationship(
+        "TaskJiraLink", back_populates="issue", cascade="all, delete-orphan"
+    )
+
+
+class ProjectJiraLink(Base):
+    __tablename__ = "project_jira_links"
+    __table_args__ = (
+        UniqueConstraint("project_id", "jira_issue_id", name="uq_project_jira_link"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    # Nullable so an epic can belong to the project without a specific team owner.
+    team_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("teams.id", ondelete="SET NULL")
+    )
+    jira_issue_id: Mapped[int] = mapped_column(
+        ForeignKey("jira_issues.id", ondelete="CASCADE"), nullable=False
+    )
+    linked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    project: Mapped[Project] = relationship("Project")
+    team: Mapped[Optional[Team]] = relationship("Team")
+    issue: Mapped[JiraIssue] = relationship("JiraIssue", back_populates="project_links")
+
+
+class TaskJiraLink(Base):
+    __tablename__ = "task_jira_links"
+    __table_args__ = (
+        UniqueConstraint("task_id", "jira_issue_id", name="uq_task_jira_link"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    jira_issue_id: Mapped[int] = mapped_column(
+        ForeignKey("jira_issues.id", ondelete="CASCADE"), nullable=False
+    )
+    linked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    task: Mapped[Task] = relationship("Task", back_populates="jira_links")
+    issue: Mapped[JiraIssue] = relationship("JiraIssue", back_populates="task_links")

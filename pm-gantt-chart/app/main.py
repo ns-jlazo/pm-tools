@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from . import models, schemas, services
 from .database import Base, SessionLocal, engine, get_db
+from .jira.routes import router as jira_router
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -28,6 +29,7 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.include_router(jira_router)
 
 
 def _ensure_v2_schema() -> None:
