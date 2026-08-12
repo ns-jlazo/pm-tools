@@ -24,6 +24,10 @@ python3 -m uvicorn app.main:app --reload
 
 Open `http://127.0.0.1:8000`.
 
+For the Jira panel, copy `.env.example` to `.env` and fill in `JIRA_URL`,
+`JIRA_EMAIL`, and `JIRA_API_TOKEN`. The server loads `.env` at startup, so restart
+uvicorn after editing it, then check `GET /api/jira/health`.
+
 ## Main API routes (V2)
 
 - `GET /api/projects`

@@ -187,6 +187,15 @@ class JiraClient:
                 break
         return collected[:max_results]
 
+    def get_myself(self) -> Dict[str, Any]:
+        """Return the authenticated account.
+
+        Unlike search/issue reads — which Jira Cloud answers anonymously with
+        empty results or a 404 when the token is bad — this endpoint returns a
+        real 401, so it is the only reliable credential check.
+        """
+        return self._get("/rest/api/3/myself")
+
     def get_issue(self, key: str, fields: Optional[Iterable[str]] = None) -> Dict[str, Any]:
         params: Dict[str, Any] = {}
         if fields:

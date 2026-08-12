@@ -170,6 +170,43 @@ def search(jql: str, limit: int = 25) -> schemas.JiraSearchResponse:
     )
 
 
+def check_health() -> schemas.JiraHealth:
+    """Report whether Jira is configured *and* whether the token actually works.
+
+    A bad token is otherwise invisible: Jira Cloud answers searches
+    anonymously (200 with zero issues) and issue reads with a 404, so the UI
+    would show "no results" instead of a credential problem.
+    """
+    try:
+        url, email, _ = get_jira_credentials()
+    except JiraNotConfigured as exc:
+        return schemas.JiraHealth(configured=False, detail=str(exc))
+
+    try:
+        me = get_client().get_myself()
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status in (401, 403):
+            detail = (
+                "Jira rejected the credentials for {email} "
+                "(check JIRA_EMAIL / JIRA_API_TOKEN).".format(email=email)
+            )
+        else:
+            detail = "Could not reach Jira: {exc}".format(exc=exc)
+        return schemas.JiraHealth(configured=True, url=url, detail=detail)
+    except requests.RequestException as exc:
+        return schemas.JiraHealth(
+            configured=True, url=url, detail="Could not reach Jira: {exc}".format(exc=exc)
+        )
+
+    return schemas.JiraHealth(
+        configured=True,
+        authenticated=True,
+        account=me.get("displayName") or me.get("emailAddress") or email,
+        url=url,
+    )
+
+
 def get_issue_by_key(key: str) -> schemas.JiraSearchResult:
     """Fetch one issue directly from Jira (used to validate paste-a-key)."""
     client = get_client()

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from .. import schemas
 from ..database import get_db
 from . import service
-from .auth import JiraNotConfigured, get_jira_credentials, is_configured
+from .auth import JiraNotConfigured
 
 
 logger = logging.getLogger(__name__)
@@ -44,13 +44,7 @@ def _handle_jira_call(func, *args, **kwargs):
 
 @router.get("/jira/health", response_model=schemas.JiraHealth)
 def jira_health() -> schemas.JiraHealth:
-    if not is_configured():
-        return schemas.JiraHealth(
-            configured=False,
-            detail="Missing JIRA_URL, JIRA_EMAIL, or JIRA_API_TOKEN.",
-        )
-    url, _, _ = get_jira_credentials()
-    return schemas.JiraHealth(configured=True, url=url)
+    return service.check_health()
 
 
 @router.get("/jira/search", response_model=schemas.JiraSearchResponse)
