@@ -691,7 +691,7 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
     <div className="app-shell">
       <section className="landing-hero hero-card">
         <div className="eyebrow">PM Tool v2</div>
-        <h1 className="hero-title">Portfolio landing</h1>
+        <h1 className="hero-title">PPM Dashboard</h1>
         <p className="hero-copy">
           Select an onboarded project to review timeline risk, dependencies, and delivery status.
         </p>
