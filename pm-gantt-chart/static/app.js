@@ -90,6 +90,16 @@ function formatDisplayDate(value) {
   return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(dateValue);
 }
 
+// A release date is read on its own, away from the timeline's day columns, so
+// unlike `formatDisplayDate` it has to carry the year.
+function formatReleaseDate(value) {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(startOfDay(value));
+}
+
 function humanizeStatus(status) {
   return status.replaceAll("_", " ");
 }
@@ -1355,6 +1365,26 @@ function deliverableToForm(deliverable) {
   };
 }
 
+// An empty date box means "no date yet", which the API reads as an explicit null.
+// `jira_keys` is create-only — DeliverableUpdate has no such field, and the links
+// of a saved deliverable are managed by JiraWorkItemLinks instead.
+function deliverablePayload(form, { includeJiraKeys = false } = {}) {
+  return {
+    title: form.title,
+    description: form.description || "",
+    team_id: Number(form.team_id),
+    planned_start: form.planned_start,
+    planned_end: form.planned_end,
+    current_start: form.current_start || null,
+    current_end: form.current_end || null,
+    status: form.status,
+    progress: Number(form.progress),
+    dependency_ids: (form.dependency_ids || []).map(Number),
+    contributor_team_ids: (form.contributor_team_ids || []).map(Number),
+    ...(includeJiraKeys ? { jira_keys: form.jira_keys || [] } : {}),
+  };
+}
+
 function milestoneToForm(milestone) {
   return {
     title: milestone.title,
@@ -1683,6 +1713,7 @@ function DeliverableForm({
   onSubmit,
   submitLabel,
   submitting,
+  idPrefix = "deliverable",
   showJiraPicker,
   epicKeys,
   statusFilter,
@@ -1690,6 +1721,7 @@ function DeliverableForm({
   onMessage,
 }) {
   const handleField = (key) => (event) => setForm({ ...form, [key]: event.target.value });
+  const fieldId = (name) => `${idPrefix}-${name}`;
   const dependencySet = new Set((form.dependency_ids || []).map(String));
   const toggleDependency = (deliverableId) => {
     const key = String(deliverableId);
@@ -1750,48 +1782,48 @@ function DeliverableForm({
     <form onSubmit=${onSubmit}>
       <div className="form-grid">
         <div className="field-wide">
-          <label htmlFor=${`${submitLabel}-title`}>Title</label>
-          <input id=${`${submitLabel}-title`} value=${form.title} onInput=${handleField("title")} required />
+          <label htmlFor=${fieldId("title")}>Title</label>
+          <input id=${fieldId("title")} value=${form.title} onInput=${handleField("title")} required />
         </div>
 
         <div className="field">
-          <label htmlFor=${`${submitLabel}-team`}>Owning team</label>
-          <select id=${`${submitLabel}-team`} value=${form.team_id} onChange=${handleField("team_id")} required>
+          <label htmlFor=${fieldId("team")}>Owning team</label>
+          <select id=${fieldId("team")} value=${form.team_id} onChange=${handleField("team_id")} required>
             <option value="">Select a team</option>
             ${teams.map((team) => html`<option key=${team.id} value=${team.id}>${team.name}</option>`)}
           </select>
         </div>
 
         <div className="field">
-          <label htmlFor=${`${submitLabel}-status`}>Status</label>
-          <select id=${`${submitLabel}-status`} value=${form.status} onChange=${handleField("status")}>
+          <label htmlFor=${fieldId("status")}>Status</label>
+          <select id=${fieldId("status")} value=${form.status} onChange=${handleField("status")}>
             ${STATUS_OPTIONS.map((status) => html`<option key=${status} value=${status}>${humanizeStatus(status)}</option>`) }
           </select>
         </div>
 
         <div className="field">
-          <label htmlFor=${`${submitLabel}-planned-start`}>Planned start</label>
-          <input id=${`${submitLabel}-planned-start`} type="date" value=${form.planned_start} onInput=${handleField("planned_start")} required />
+          <label htmlFor=${fieldId("planned-start")}>Planned start</label>
+          <input id=${fieldId("planned-start")} type="date" value=${form.planned_start} onInput=${handleField("planned_start")} required />
         </div>
 
         <div className="field">
-          <label htmlFor=${`${submitLabel}-planned-end`}>Planned end</label>
-          <input id=${`${submitLabel}-planned-end`} type="date" value=${form.planned_end} onInput=${handleField("planned_end")} required />
+          <label htmlFor=${fieldId("planned-end")}>Planned end</label>
+          <input id=${fieldId("planned-end")} type="date" value=${form.planned_end} onInput=${handleField("planned_end")} required />
         </div>
 
         <div className="field">
-          <label htmlFor=${`${submitLabel}-current-start`}>Current start</label>
-          <input id=${`${submitLabel}-current-start`} type="date" value=${form.current_start} onInput=${handleField("current_start")} />
+          <label htmlFor=${fieldId("current-start")}>Current start</label>
+          <input id=${fieldId("current-start")} type="date" value=${form.current_start} onInput=${handleField("current_start")} />
         </div>
 
         <div className="field">
-          <label htmlFor=${`${submitLabel}-current-end`}>Current end</label>
-          <input id=${`${submitLabel}-current-end`} type="date" value=${form.current_end} onInput=${handleField("current_end")} />
+          <label htmlFor=${fieldId("current-end")}>Current end</label>
+          <input id=${fieldId("current-end")} type="date" value=${form.current_end} onInput=${handleField("current_end")} />
         </div>
 
         <div className="field">
-          <label htmlFor=${`${submitLabel}-progress`}>Progress %</label>
-          <input id=${`${submitLabel}-progress`} type="number" min="0" max="100" value=${form.progress} onInput=${handleField("progress")} />
+          <label htmlFor=${fieldId("progress")}>Progress %</label>
+          <input id=${fieldId("progress")} type="number" min="0" max="100" value=${form.progress} onInput=${handleField("progress")} />
           ${deliverableId
             ? html`<${RecalcProgressButton}
                 itemId=${deliverableId}
@@ -1856,8 +1888,8 @@ function DeliverableForm({
         </div>
 
         <div className="field-wide">
-          <label htmlFor=${`${submitLabel}-description`}>Description</label>
-          <textarea id=${`${submitLabel}-description`} rows="6" value=${form.description} onInput=${handleField("description")}></textarea>
+          <label htmlFor=${fieldId("description")}>Description</label>
+          <textarea id=${fieldId("description")} rows="6" value=${form.description} onInput=${handleField("description")}></textarea>
           <span className="help-text">${DESCRIPTION_HINT}</span>
         </div>
       </div>
@@ -2114,206 +2146,432 @@ function MilestoneForm({
   `;
 }
 
-// The parent-deliverable selector is where "a milestone cannot exist without a
-// deliverable" is enforced in the UI: with no deliverables there is nothing to
-// pick and the panel offers no create form at all.
-function MilestonePanel({
+// CSV import is an occasional bulk action, so it hides behind a toggle in the
+// roster header instead of holding a panel of its own open all the time.
+function CsvImportForm({ csvFile, setCsvFile, onSubmit, submitting }) {
+  return html`
+    <form className="roster-import" onSubmit=${onSubmit}>
+      <div className="field-wide">
+        <label htmlFor="csv-file">CSV file</label>
+        <input
+          id="csv-file"
+          type="file"
+          accept=".csv,text/csv"
+          onChange=${(event) =>
+            setCsvFile(event.target.files && event.target.files[0] ? event.target.files[0] : null)}
+        />
+        <span className="help-text">
+          Imports deliverables into this project only, creating any team the file names.
+        </span>
+      </div>
+      <div className="actions">
+        <button className="button-primary" type="submit" disabled=${submitting}>Import CSV</button>
+        ${csvFile ? html`<span className="help-text">Selected: ${csvFile.name}</span>` : null}
+      </div>
+    </form>
+  `;
+}
+
+// Replaces what used to be four always-open form panels (create deliverable,
+// update deliverable, milestones, bulk import). This panel only *reads*: every
+// form opens as a modal, so its height no longer grows with the form count. A
+// milestone is created from its parent's row, which is where "a milestone cannot
+// exist without a deliverable" now shows up in the UI.
+function DeliverableRosterPanel({
   deliverables,
   teams,
-  actions,
-  onMessage,
+  deliverableActions,
+  milestoneActions,
   submitting,
+  onMessage,
   epicKeys,
   epicTeams,
   statusFilter,
+  csvFile,
+  setCsvFile,
+  onCsvSubmit,
 }) {
-  const [parentId, setParentId] = useState(
-    deliverables[0] ? String(deliverables[0].id) : ""
-  );
-  const [createForm, setCreateForm] = useState({
-    ...DEFAULT_MILESTONE,
-    team_id: teams[0] ? String(teams[0].id) : "",
-  });
-  const [editingId, setEditingId] = useState("");
-  const [editForm, setEditForm] = useState(DEFAULT_MILESTONE);
+  // Collapsed by default, keyed by deliverable id — same call as the chart's
+  // milestone sub-rows: detail, not the first thing to read.
+  const [expanded, setExpanded] = useState({});
+  const [importOpen, setImportOpen] = useState(false);
+  // null | {kind: "deliverable-create"} | {kind: "deliverable-edit", id}
+  //      | {kind: "milestone-create", deliverableId}
+  //      | {kind: "milestone-edit", id, deliverableId}
+  const [editor, setEditor] = useState(null);
+  const [deliverableDraft, setDeliverableDraft] = useState(DEFAULT_DELIVERABLE);
+  const [milestoneDraft, setMilestoneDraft] = useState(DEFAULT_MILESTONE);
 
-  // A deliverable can be deleted from under the selection, and the ids only
-  // arrive once the dashboard has loaded.
+  const findDeliverable = (id) => deliverables.find((item) => String(item.id) === String(id));
+  const closeEditor = () => setEditor(null);
+  const toggle = (deliverableId) =>
+    setExpanded((current) => ({ ...current, [deliverableId]: !current[deliverableId] }));
+
+  const openDeliverableCreate = () => {
+    setDeliverableDraft({
+      ...DEFAULT_DELIVERABLE,
+      team_id: teams[0] ? String(teams[0].id) : "",
+    });
+    setEditor({ kind: "deliverable-create" });
+  };
+
+  const openDeliverableEdit = (deliverable) => {
+    setDeliverableDraft(deliverableToForm(deliverable));
+    setEditor({ kind: "deliverable-edit", id: deliverable.id });
+  };
+
+  // The new milestone inherits its parent's team as a starting point; any team on
+  // the project can own it.
+  const openMilestoneCreate = (deliverable) => {
+    setMilestoneDraft({ ...DEFAULT_MILESTONE, team_id: String(deliverable.team_id) });
+    setEditor({ kind: "milestone-create", deliverableId: deliverable.id });
+    setExpanded((current) => ({ ...current, [deliverable.id]: true }));
+  };
+
+  const openMilestoneEdit = (deliverable, milestone) => {
+    setMilestoneDraft(milestoneToForm(milestone));
+    setEditor({ kind: "milestone-edit", id: milestone.id, deliverableId: deliverable.id });
+  };
+
+  // A refresh can delete the row an open editor points at — the Remove button
+  // beside it, or another tab.
   useEffect(() => {
-    const stillThere = deliverables.some((item) => String(item.id) === parentId);
-    if (!stillThere) setParentId(deliverables[0] ? String(deliverables[0].id) : "");
+    if (!editor) return;
+    if (editor.kind === "deliverable-edit" && !findDeliverable(editor.id)) {
+      setEditor(null);
+      return;
+    }
+    if (editor.kind === "milestone-create" && !findDeliverable(editor.deliverableId)) {
+      setEditor(null);
+      return;
+    }
+    if (editor.kind === "milestone-edit") {
+      const parent = findDeliverable(editor.deliverableId);
+      const stillThere =
+        parent &&
+        (parent.milestones || []).some((item) => String(item.id) === String(editor.id));
+      if (!stillThere) setEditor(null);
+    }
   }, [deliverables]);
 
-  const parent = deliverables.find((item) => String(item.id) === parentId);
-  const milestones = (parent && parent.milestones) || [];
-  const editing = milestones.find((item) => String(item.id) === editingId);
-
-  // Keep the open editor in step with a refreshed dashboard, the way the
-  // deliverable edit form does.
-  useEffect(() => {
-    if (editing) setEditForm(milestoneToForm(editing));
-    else if (editingId) setEditingId("");
-  }, [editing && editing.id, editing && editing.target_date, editing && editing.actual_date,
-      editing && editing.status, editing && editing.progress]);
-
-  if (!deliverables.length) {
-    return html`
-      <article className="panel">
-        <h2>Milestones</h2>
-        <p className="panel-copy">
-          Milestones break a deliverable into pieces that any team can own.
-        </p>
-        <div className="empty-state">
-          Create a deliverable first — every milestone belongs to one.
-        </div>
-      </article>
-    `;
-  }
-
-  const submitCreate = async (event) => {
+  // Every submit closes only when the write actually landed, so a rejected save
+  // keeps the typed values on screen.
+  const submitDeliverableCreate = async (event) => {
     event.preventDefault();
-    const ok = await actions.create(Number(parentId), {
-      ...milestonePayload(createForm),
-      jira_keys: createForm.jira_keys || [],
+    const ok = await deliverableActions.create(
+      deliverablePayload(deliverableDraft, { includeJiraKeys: true })
+    );
+    if (ok) closeEditor();
+  };
+
+  const submitDeliverableEdit = async (event) => {
+    event.preventDefault();
+    const ok = await deliverableActions.update(
+      Number(editor.id),
+      deliverablePayload(deliverableDraft)
+    );
+    if (ok) closeEditor();
+  };
+
+  const submitMilestoneCreate = async (event) => {
+    event.preventDefault();
+    const ok = await milestoneActions.create(Number(editor.deliverableId), {
+      ...milestonePayload(milestoneDraft),
+      jira_keys: milestoneDraft.jira_keys || [],
     });
-    if (ok) {
-      setCreateForm({
-        ...DEFAULT_MILESTONE,
-        team_id: teams[0] ? String(teams[0].id) : "",
-      });
-    }
+    if (ok) closeEditor();
   };
 
-  const submitEdit = async (event) => {
+  const submitMilestoneEdit = async (event) => {
     event.preventDefault();
-    const ok = await actions.update(Number(editingId), milestonePayload(editForm));
-    if (ok) setEditingId("");
+    const ok = await milestoneActions.update(Number(editor.id), milestonePayload(milestoneDraft));
+    if (ok) closeEditor();
   };
+
+  const milestoneRow = (deliverable, milestone) => html`
+    <div className="milestone-list-row" key=${milestone.id}>
+      <span className="team-dot" style=${{ background: milestone.team_color }}></span>
+      <div>
+        <strong>${milestone.title}</strong>
+        <div className="task-meta">
+          <span className="tiny-pill">${milestone.team_name}</span>
+          <span className="tiny-pill">Target: ${formatDisplayDate(milestone.target_date)}</span>
+          ${milestone.actual_date
+            ? html`<span className="tiny-pill">
+                Actual: ${formatDisplayDate(milestone.actual_date)}
+              </span>`
+            : null}
+          <span className="tiny-pill">${humanizeStatus(milestone.status)}</span>
+          <span className="tiny-pill">${milestone.progress}%</span>
+          ${milestone.slipped
+            ? html`<span className="risk-badge high">Slipped ${milestone.slip_days}d</span>`
+            : null}
+        </div>
+      </div>
+      <div className="milestone-list-actions">
+        <button
+          className="button-secondary"
+          type="button"
+          disabled=${submitting}
+          onClick=${() => openMilestoneEdit(deliverable, milestone)}
+        >Edit</button>
+        <button
+          className="button-secondary"
+          type="button"
+          disabled=${submitting}
+          onClick=${() => milestoneActions.remove(milestone.id)}
+        >Remove</button>
+      </div>
+    </div>
+  `;
+
+  const deliverableRow = (deliverable) => {
+    const milestones = deliverable.milestones || [];
+    const open = Boolean(expanded[deliverable.id]);
+    return html`
+      <div className="roster-item" key=${deliverable.id}>
+        <div className="roster-row">
+          <span className="team-dot" style=${{ background: deliverable.team_color }}></span>
+          <div>
+            <strong>${deliverable.title}</strong>
+            <div className="task-meta">
+              <span className="tiny-pill">${deliverable.team_name}</span>
+              <span className="tiny-pill">
+                Plan: ${formatDisplayDate(deliverable.planned_start)} –
+                ${" "}${formatDisplayDate(deliverable.planned_end)}
+              </span>
+              <span className="tiny-pill">${humanizeStatus(deliverable.status)}</span>
+              <span className="tiny-pill">${deliverable.progress}%</span>
+              ${deliverable.at_risk
+                ? html`<span className=${`risk-badge ${deliverable.risk_level}`}>
+                    ${deliverable.risk_level}
+                  </span>`
+                : null}
+            </div>
+            ${milestones.length
+              ? html`
+                  <button
+                    type="button"
+                    className="milestone-toggle"
+                    aria-expanded=${open}
+                    onClick=${() => toggle(deliverable.id)}
+                  >
+                    ${open ? "▾" : "▸"} ${milestones.length}
+                    ${milestones.length === 1 ? "milestone" : "milestones"}
+                  </button>
+                `
+              : html`<span className="help-text">No milestones yet.</span>`}
+          </div>
+          <div className="roster-row-actions">
+            <button
+              className="button-secondary"
+              type="button"
+              disabled=${submitting}
+              onClick=${() => openDeliverableEdit(deliverable)}
+            >Edit</button>
+            <button
+              className="button-secondary"
+              type="button"
+              disabled=${submitting}
+              onClick=${() => openMilestoneCreate(deliverable)}
+            >+ Milestone</button>
+          </div>
+        </div>
+        ${open && milestones.length
+          ? html`<div className="roster-milestones">
+              ${milestones.map((milestone) => milestoneRow(deliverable, milestone))}
+            </div>`
+          : null}
+      </div>
+    `;
+  };
+
+  const editingDeliverable =
+    editor && editor.kind === "deliverable-edit" ? findDeliverable(editor.id) : null;
+  const milestoneParent =
+    editor && editor.deliverableId ? findDeliverable(editor.deliverableId) : null;
+  const editingMilestone =
+    editor && editor.kind === "milestone-edit" && milestoneParent
+      ? (milestoneParent.milestones || []).find((item) => String(item.id) === String(editor.id))
+      : null;
 
   return html`
-    <article className="panel">
-      <h2>Milestones</h2>
-      <p className="panel-copy">
-        Milestones break a deliverable into pieces that any team can own, each with its own
-        target date and Jira stories. A slipped milestone raises its parent's risk.
-      </p>
-
-      <div className="field-wide">
-        <label htmlFor="milestone-parent">Parent deliverable</label>
-        <select
-          id="milestone-parent"
-          value=${parentId}
-          onChange=${(event) => { setParentId(event.target.value); setEditingId(""); }}
-        >
-          ${deliverables.map(
-            (deliverable) => html`
-              <option key=${deliverable.id} value=${deliverable.id}>${deliverable.title}</option>
-            `
-          )}
-        </select>
+    <article className="panel roster-panel">
+      <div className="roster-header">
+        <div>
+          <h2>Deliverables & milestones</h2>
+          <p className="panel-copy">
+            Deliverables are this project's features and enhancements; a milestone is one dated
+            piece of a deliverable that any team can own. Editing opens a dialog, so the timeline
+            above stays what you read.
+          </p>
+        </div>
+        <div className="actions">
+          <button
+            className="button-primary"
+            type="button"
+            disabled=${!teams.length || submitting}
+            onClick=${openDeliverableCreate}
+          >+ New deliverable</button>
+          <button
+            className="button-secondary"
+            type="button"
+            aria-expanded=${importOpen}
+            onClick=${() => setImportOpen(!importOpen)}
+          >${importOpen ? "Hide import" : "Import CSV"}</button>
+        </div>
       </div>
 
-      <div className="milestone-list">
-        ${milestones.length
-          ? milestones.map(
-              (milestone) => html`
-                <div className="milestone-list-row" key=${milestone.id}>
-                  <span className="team-dot" style=${{ background: milestone.team_color }}></span>
-                  <div>
-                    <strong>${milestone.title}</strong>
-                    <div className="task-meta">
-                      <span className="tiny-pill">${milestone.team_name}</span>
-                      <span className="tiny-pill">
-                        Target: ${formatDisplayDate(milestone.target_date)}
-                      </span>
-                      ${milestone.actual_date
-                        ? html`<span className="tiny-pill">
-                            Actual: ${formatDisplayDate(milestone.actual_date)}
-                          </span>`
-                        : null}
-                      <span className="tiny-pill">${humanizeStatus(milestone.status)}</span>
-                      <span className="tiny-pill">${milestone.progress}%</span>
-                      ${milestone.slipped
-                        ? html`<span className="risk-badge high">
-                            Slipped ${milestone.slip_days}d
-                          </span>`
-                        : null}
-                    </div>
-                  </div>
-                  <div className="milestone-list-actions">
-                    <button
-                      className="button-secondary"
-                      type="button"
-                      disabled=${submitting}
-                      onClick=${() =>
-                        setEditingId(String(milestone.id) === editingId ? "" : String(milestone.id))}
-                    >${String(milestone.id) === editingId ? "Close" : "Edit"}</button>
-                    <button
-                      className="button-secondary"
-                      type="button"
-                      disabled=${submitting}
-                      onClick=${() => actions.remove(milestone.id)}
-                    >Remove</button>
-                  </div>
-                </div>
-              `
-            )
-          : html`<div className="empty-state">
-              No milestones on this deliverable yet — add one below.
-            </div>`}
-      </div>
+      ${teams.length
+        ? null
+        : html`<div className="help-text">
+            Add a team before the first deliverable — open the Teams card at the top of the
+            workspace.
+          </div>`}
 
-      ${editing
+      ${importOpen
+        ? html`<${CsvImportForm}
+            csvFile=${csvFile}
+            setCsvFile=${setCsvFile}
+            onSubmit=${onCsvSubmit}
+            submitting=${submitting}
+          />`
+        : null}
+
+      ${deliverables.length
+        ? html`<div className="roster-list">${deliverables.map(deliverableRow)}</div>`
+        : html`<div className="empty-state">
+            No deliverables yet — create the first one to start the timeline.
+          </div>`}
+
+      ${editor && editor.kind === "deliverable-create"
         ? html`
-            <div className="milestone-editor">
-              <strong>Edit “${editing.title}”</strong>
-              <${MilestoneForm}
-                teams=${teams}
-                form=${editForm}
-                setForm=${setEditForm}
-                onSubmit=${submitEdit}
-                submitLabel="Save milestone"
-                submitting=${submitting}
-                idPrefix="milestone-edit"
-                showJiraPicker=${false}
-                milestoneId=${editing.id}
-                onMessage=${onMessage}
-              />
-              <${JiraWorkItemLinks}
-                scope="milestones"
-                itemId=${editing.id}
-                onMessage=${onMessage}
-                epicKeys=${epicKeys}
-                statusFilter=${statusFilter}
-                onProgressSuggested=${(value) =>
-                  setEditForm((current) => ({ ...current, progress: value }))}
-                teams=${teams}
-                epicTeams=${epicTeams}
-              />
-            </div>
+            <${DeliverableEditorModal}
+              mode="create"
+              teams=${teams}
+              deliverables=${deliverables}
+              form=${deliverableDraft}
+              setForm=${setDeliverableDraft}
+              onSave=${submitDeliverableCreate}
+              onCancel=${closeEditor}
+              submitting=${submitting}
+              onMessage=${onMessage}
+              epicKeys=${epicKeys}
+              statusFilter=${statusFilter}
+              epicTeams=${epicTeams}
+            />
           `
         : null}
 
-      <div className="milestone-editor">
-        <strong>Add a milestone to “${parent ? parent.title : ""}”</strong>
-        <${MilestoneForm}
-          teams=${teams}
-          form=${createForm}
-          setForm=${setCreateForm}
-          onSubmit=${submitCreate}
-          submitLabel="Create milestone"
-          submitting=${submitting}
-          idPrefix="milestone-create"
-          showJiraPicker=${true}
-          epicKeys=${epicKeys}
-          statusFilter=${statusFilter}
-          onMessage=${onMessage}
-        />
-      </div>
+      ${editingDeliverable
+        ? html`
+            <${DeliverableEditorModal}
+              mode="edit"
+              deliverableId=${Number(editingDeliverable.id)}
+              title=${editingDeliverable.title}
+              teams=${teams}
+              deliverables=${deliverables.filter(
+                (item) => String(item.id) !== String(editingDeliverable.id)
+              )}
+              form=${deliverableDraft}
+              setForm=${setDeliverableDraft}
+              onSave=${submitDeliverableEdit}
+              onCancel=${closeEditor}
+              submitting=${submitting}
+              onMessage=${onMessage}
+              epicKeys=${epicKeys}
+              statusFilter=${statusFilter}
+              epicTeams=${epicTeams}
+            />
+          `
+        : null}
+
+      ${editor && editor.kind === "milestone-create" && milestoneParent
+        ? html`
+            <${MilestoneEditorModal}
+              mode="create"
+              parentTitle=${milestoneParent.title}
+              teams=${teams}
+              form=${milestoneDraft}
+              setForm=${setMilestoneDraft}
+              onSave=${submitMilestoneCreate}
+              onCancel=${closeEditor}
+              submitting=${submitting}
+              onMessage=${onMessage}
+              epicKeys=${epicKeys}
+              statusFilter=${statusFilter}
+              epicTeams=${epicTeams}
+            />
+          `
+        : null}
+
+      ${editingMilestone
+        ? html`
+            <${MilestoneEditorModal}
+              milestone=${editingMilestone}
+              parentTitle=${milestoneParent.title}
+              teams=${teams}
+              form=${milestoneDraft}
+              setForm=${setMilestoneDraft}
+              onSave=${submitMilestoneEdit}
+              onCancel=${closeEditor}
+              submitting=${submitting}
+              onMessage=${onMessage}
+              epicKeys=${epicKeys}
+              statusFilter=${statusFilter}
+              epicTeams=${epicTeams}
+            />
+          `
+        : null}
     </article>
   `;
 }
 
+// Shell every editor shares. Portalled to <body> because as an in-row element an
+// editor stretched the timeline grid and scrolled with the chart, and because
+// mounting outside the caller's markup keeps the story picker it may host from
+// ever becoming a nested form. A plain div, not a form, for the same reason.
+function EditorModal({ title, subtitle, wide, onClose, children }) {
+  // Esc closes, but only when this modal is the top one: the story picker is
+  // portalled to <body> as well, so a document-level listener would otherwise see
+  // its Esc and dismiss the editor out from under it.
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      if (document.querySelector(".jira-modal-backdrop:not(.inline-modal-backdrop)")) return;
+      onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return createPortal(
+    html`
+    <div
+      className="jira-modal-backdrop inline-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      onClick=${onClose}
+    >
+      <div
+        className=${`jira-modal inline-modal ${wide ? "wide" : ""}`}
+        onClick=${(event) => event.stopPropagation()}
+      >
+        <header className="jira-modal-header">
+          <h3>${title}</h3>
+          <button className="button-secondary" type="button" onClick=${onClose}>Close</button>
+        </header>
+        ${subtitle ? html`<p className="help-text">${subtitle}</p>` : null}
+        ${children}
+      </div>
+    </div>
+  `,
+    document.body
+  );
+}
+
+// The chart's own editor: deliberately narrower than the roster's full form, for
+// the status/progress/date nudges that make up most timeline edits.
 function InlineEditPopover({
   deliverable,
   form,
@@ -2330,35 +2588,8 @@ function InlineEditPopover({
 }) {
   const handleField = (key) => (event) => setForm({ ...form, [key]: event.target.value });
 
-  // Esc closes, but only when this modal is the top one: the story picker is
-  // portalled to <body> as well, so a document-level listener would otherwise see
-  // its Esc and dismiss the editor out from under it.
-  useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.key !== "Escape") return;
-      if (document.querySelector(".jira-modal-backdrop:not(.inline-modal-backdrop)")) return;
-      onCancel();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onCancel]);
-
-  // Portalled to <body> like the story picker: as an in-row element this stretched
-  // the timeline grid and scrolled with the chart. A plain div, not a form — the
-  // picker it hosts renders its own forms, and nesting forms is invalid.
-  return createPortal(
-    html`
-    <div
-      className="jira-modal-backdrop inline-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
-      onClick=${onCancel}
-    >
-      <div className="jira-modal inline-modal" onClick=${(event) => event.stopPropagation()}>
-        <header className="jira-modal-header">
-          <h3>Quick edit: ${deliverable.title}</h3>
-          <button className="button-secondary" type="button" onClick=${onCancel}>Close</button>
-        </header>
+  return html`
+    <${EditorModal} title=${`Quick edit: ${deliverable.title}`} onClose=${onCancel}>
         <div className="inline-grid">
           <label>
             Status
@@ -2406,18 +2637,17 @@ function InlineEditPopover({
           epicTeams=${epicTeams}
           compact=${true}
         />
-      </div>
-    </div>
-  `,
-    document.body
-  );
+    <//>
+  `;
 }
 
-// Same portal/Esc handling as InlineEditPopover, opened by clicking a diamond on
-// the timeline. It hosts the full MilestoneForm because a milestone is small
-// enough to edit whole.
-function MilestoneEditPopover({
+// One milestone editor for both the timeline diamonds and the roster panel. In
+// create mode there is no id yet, so it offers the pre-save story picker instead
+// of the live links strip.
+function MilestoneEditorModal({
+  mode = "edit",
   milestone,
+  parentTitle,
   teams,
   form,
   setForm,
@@ -2430,62 +2660,111 @@ function MilestoneEditPopover({
   onLinksChanged,
   epicTeams,
 }) {
-  useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.key !== "Escape") return;
-      if (document.querySelector(".jira-modal-backdrop:not(.inline-modal-backdrop)")) return;
-      onCancel();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onCancel]);
+  const creating = mode === "create";
 
-  return createPortal(
-    html`
-    <div
-      className="jira-modal-backdrop inline-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
-      onClick=${onCancel}
+  return html`
+    <${EditorModal}
+      title=${creating ? `New milestone in “${parentTitle}”` : `Milestone: ${milestone.title}`}
+      subtitle=${creating
+        ? "A milestone is one dated piece of this deliverable, and any team on the project can own it."
+        : `Part of ${parentTitle || "its deliverable"} — a slip here raises that deliverable's risk, but its progress % stays its own.`}
+      onClose=${onCancel}
     >
-      <div className="jira-modal inline-modal" onClick=${(event) => event.stopPropagation()}>
-        <header className="jira-modal-header">
-          <h3>Milestone: ${milestone.title}</h3>
-          <button className="button-secondary" type="button" onClick=${onCancel}>Close</button>
-        </header>
-        <p className="help-text">
-          Part of ${milestone.deliverable_title || "its deliverable"} — a slip here raises that
-          deliverable's risk, but its progress % stays its own.
-        </p>
         <${MilestoneForm}
           teams=${teams}
           form=${form}
           setForm=${setForm}
           onSubmit=${onSave}
-          submitLabel="Save milestone"
+          submitLabel=${creating ? "Create milestone" : "Save milestone"}
           submitting=${submitting}
-          idPrefix="milestone-inline"
-          showJiraPicker=${false}
-          milestoneId=${milestone.id}
-          onMessage=${onMessage}
-        />
-        <${JiraWorkItemLinks}
-          scope="milestones"
-          itemId=${milestone.id}
-          onMessage=${onMessage}
+          idPrefix=${creating ? "milestone-create" : "milestone-edit"}
+          showJiraPicker=${creating}
           epicKeys=${epicKeys}
           statusFilter=${statusFilter}
-          onLinked=${onLinksChanged}
-          onProgressSuggested=${(value) => setForm((current) => ({ ...current, progress: value }))}
-          teams=${teams}
-          epicTeams=${epicTeams}
-          compact=${true}
+          milestoneId=${creating ? null : milestone.id}
+          onMessage=${onMessage}
         />
-      </div>
-    </div>
-  `,
-    document.body
-  );
+        ${creating
+          ? null
+          : html`
+              <${JiraWorkItemLinks}
+                scope="milestones"
+                itemId=${milestone.id}
+                onMessage=${onMessage}
+                epicKeys=${epicKeys}
+                statusFilter=${statusFilter}
+                onLinked=${onLinksChanged}
+                onProgressSuggested=${(value) =>
+                  setForm((current) => ({ ...current, progress: value }))}
+                teams=${teams}
+                epicTeams=${epicTeams}
+                compact=${true}
+              />
+            `}
+    <//>
+  `;
+}
+
+// The full deliverable editor, opened from the roster. Wider than the other
+// editors because DeliverableForm lays its fields out in two columns.
+function DeliverableEditorModal({
+  mode = "edit",
+  deliverableId,
+  title,
+  teams,
+  deliverables,
+  form,
+  setForm,
+  onSave,
+  onCancel,
+  submitting,
+  onMessage,
+  epicKeys,
+  statusFilter,
+  onLinksChanged,
+  epicTeams,
+}) {
+  const creating = mode === "create";
+
+  return html`
+    <${EditorModal}
+      title=${creating ? "New deliverable" : `Edit: ${title}`}
+      wide=${true}
+      onClose=${onCancel}
+    >
+        <${DeliverableForm}
+          teams=${teams}
+          deliverables=${deliverables}
+          form=${form}
+          setForm=${setForm}
+          onSubmit=${onSave}
+          submitLabel=${creating ? "Create deliverable" : "Save deliverable"}
+          submitting=${submitting}
+          idPrefix=${creating ? "deliverable-create" : "deliverable-edit"}
+          showJiraPicker=${creating}
+          epicKeys=${epicKeys}
+          statusFilter=${statusFilter}
+          deliverableId=${creating ? null : deliverableId}
+          onMessage=${onMessage}
+        />
+        ${creating
+          ? null
+          : html`
+              <${JiraWorkItemLinks}
+                itemId=${deliverableId}
+                onMessage=${onMessage}
+                epicKeys=${epicKeys}
+                statusFilter=${statusFilter}
+                onLinked=${onLinksChanged}
+                onProgressSuggested=${(value) =>
+                  setForm((current) => ({ ...current, progress: value }))}
+                teams=${teams}
+                epicTeams=${epicTeams}
+                compact=${true}
+              />
+            `}
+    <//>
+  `;
 }
 
 function GanttStoryList({ links, statusFilter, teams, epicTeams }) {
@@ -3096,8 +3375,9 @@ function GanttChart({
 
       ${editingMilestone
         ? html`
-            <${MilestoneEditPopover}
+            <${MilestoneEditorModal}
               milestone=${editingMilestone}
+              parentTitle=${editingMilestone.deliverable_title}
               teams=${teams}
               form=${milestoneForm}
               setForm=${setMilestoneForm}
@@ -3373,28 +3653,6 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
                 required
               />
             </div>
-            <div className="field">
-              <label htmlFor="project-edit-color">Accent color</label>
-              <input
-                id="project-edit-color"
-                type="color"
-                value=${draft.color}
-                onInput=${(event) => setDraft({ ...draft, color: event.target.value })}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="project-edit-release-date">Release date</label>
-              <input
-                id="project-edit-release-date"
-                type="date"
-                value=${draft.release_date}
-                onInput=${(event) => setDraft({ ...draft, release_date: event.target.value })}
-              />
-              <span className="help-text">
-                When the software becomes available to customers. Drawn as a marker on the
-                Timeline Overview; leave empty if no release is committed to yet.
-              </span>
-            </div>
             <div className="field-wide">
               <label htmlFor="project-edit-description">Description</label>
               <textarea
@@ -3404,6 +3662,31 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
                 onInput=${(event) => setDraft({ ...draft, description: event.target.value })}
               ></textarea>
               <span className="help-text">${DESCRIPTION_HINT}</span>
+            </div>
+            <div className="field-wide">
+              <label htmlFor="project-edit-release-date">Release date</label>
+              <div className="release-row-inputs">
+                <input
+                  id="project-edit-color"
+                  className="color-swatch"
+                  type="color"
+                  aria-label="Accent color"
+                  title="Accent color"
+                  value=${draft.color}
+                  onInput=${(event) => setDraft({ ...draft, color: event.target.value })}
+                />
+                <input
+                  id="project-edit-release-date"
+                  type="date"
+                  value=${draft.release_date}
+                  onInput=${(event) => setDraft({ ...draft, release_date: event.target.value })}
+                />
+              </div>
+              <span className="help-text">
+                The square sets the workspace accent color. The date is when the software becomes
+                available to customers — it reads on the project card and is drawn as a marker on
+                the Timeline Overview; leave it empty if no release is committed to yet.
+              </span>
             </div>
             <div className="field-wide">
               <label className="checkbox-field" htmlFor="project-edit-is-example">
@@ -3544,18 +3827,10 @@ function DeliverableTable({ deliverables }) {
 function WorkspaceView({
   dashboard,
   onBack,
-  deliverableForm,
-  setDeliverableForm,
-  editDeliverableId,
-  setEditDeliverableId,
-  editForm,
-  setEditForm,
   csvFile,
   setCsvFile,
-  onDeliverableSubmit,
-  onUpdateSubmit,
   onCsvSubmit,
-  onInlineSave,
+  deliverableActions,
   milestoneActions,
   onNotify,
   onWorkspaceRefresh,
@@ -3598,6 +3873,11 @@ function WorkspaceView({
           <p className="hero-copy">
             <${RichText} text=${dashboard.project.description || "No description yet."} />
           </p>
+          ${dashboard.project.release_date
+            ? html`<p className="hero-release">
+                Release · ${formatReleaseDate(dashboard.project.release_date)}
+              </p>`
+            : null}
           <div className="hero-stats">
             <${SummaryCard}
               label="Teams"
@@ -3633,7 +3913,7 @@ function WorkspaceView({
           teams=${teams}
           deliverables=${deliverables}
           releaseDate=${dashboard.project.release_date || ""}
-          onInlineSave=${onInlineSave}
+          onInlineSave=${deliverableActions.update}
           onMilestoneSave=${milestoneActions.update}
           submitting=${submitting}
           statusFilter=${statusFilter}
@@ -3656,97 +3936,20 @@ function WorkspaceView({
       />
 
       <section className="workspace-panels">
-        <article className="panel">
-          <h2>Create deliverable</h2>
-          <p className="panel-copy">
-            Project deliverables include project features and enhancements. Create them beneath the
-            timeline so review stays chart-first.
-          </p>
-          <${DeliverableForm}
-            teams=${teams}
-            deliverables=${deliverables}
-            form=${deliverableForm}
-            setForm=${setDeliverableForm}
-            onSubmit=${onDeliverableSubmit}
-            submitLabel="Create deliverable"
-            submitting=${submitting}
-            showJiraPicker=${true}
-            epicKeys=${epicKeys}
-            statusFilter=${statusFilter}
-          />
-        </article>
-
-        <article className="panel">
-          <h2>Update deliverable</h2>
-          <div className="field-wide">
-            <label htmlFor="edit-deliverable">Deliverable</label>
-            <select
-              id="edit-deliverable"
-              value=${editDeliverableId}
-              onChange=${(event) => setEditDeliverableId(event.target.value)}
-            >
-              ${deliverables.map(
-                (deliverable) => html`
-                  <option key=${deliverable.id} value=${deliverable.id}>${deliverable.title}</option>
-                `
-              )}
-            </select>
-          </div>
-          ${editDeliverableId
-            ? html`
-                <${DeliverableForm}
-                  teams=${teams}
-                  deliverables=${deliverables.filter(
-                    (deliverable) => String(deliverable.id) !== String(editDeliverableId)
-                  )}
-                  form=${editForm}
-                  setForm=${setEditForm}
-                  onSubmit=${onUpdateSubmit}
-                  submitLabel="Save update"
-                  submitting=${submitting}
-                  showJiraPicker=${false}
-                  deliverableId=${Number(editDeliverableId)}
-                  onMessage=${onNotify}
-                />
-                <${JiraWorkItemLinks}
-                  itemId=${Number(editDeliverableId)}
-                  onMessage=${onNotify}
-                  epicKeys=${epicKeys}
-                  statusFilter=${statusFilter}
-                  onProgressSuggested=${(value) =>
-                    setEditForm((current) => ({ ...current, progress: value }))}
-                  teams=${teams}
-                  epicTeams=${epicTeams}
-                />
-              `
-            : html`<div className="empty-state">Add a deliverable first to start tracking updates.</div>`}
-        </article>
-
-        <${MilestonePanel}
+        <${DeliverableRosterPanel}
           deliverables=${deliverables}
           teams=${teams}
-          actions=${milestoneActions}
-          onMessage=${onNotify}
+          deliverableActions=${deliverableActions}
+          milestoneActions=${milestoneActions}
           submitting=${submitting}
+          onMessage=${onNotify}
           epicKeys=${epicKeys}
           epicTeams=${epicTeams}
           statusFilter=${statusFilter}
+          csvFile=${csvFile}
+          setCsvFile=${setCsvFile}
+          onCsvSubmit=${onCsvSubmit}
         />
-
-        <article className="panel">
-          <h2>Bulk import</h2>
-          <p className="panel-copy">Import deliverables for this selected project only.</p>
-          <form onSubmit=${onCsvSubmit}>
-            <div className="field-wide">
-              <label htmlFor="csv-file">CSV file</label>
-              <input id="csv-file" type="file" accept=".csv,text/csv" onChange=${(event) => setCsvFile(event.target.files && event.target.files[0] ? event.target.files[0] : null)} />
-            </div>
-            <div className="actions">
-              <button className="button-primary" type="submit" disabled=${submitting}>Import CSV</button>
-              ${csvFile ? html`<span className="help-text">Selected: ${csvFile.name}</span>` : null}
-            </div>
-          </form>
-        </article>
       </section>
 
       ${teamDrawerOpen
@@ -3783,9 +3986,6 @@ function App() {
   const [dashboard, setDashboard] = useState(null);
 
   const [projectForm, setProjectForm] = useState(DEFAULT_PROJECT);
-  const [deliverableForm, setDeliverableForm] = useState(DEFAULT_DELIVERABLE);
-  const [editDeliverableId, setEditDeliverableId] = useState("");
-  const [editForm, setEditForm] = useState(DEFAULT_DELIVERABLE);
   const [csvFile, setCsvFile] = useState(null);
 
   // One transient toast. `id` is monotonic so a fresh message restarts the fade
@@ -3830,14 +4030,6 @@ function App() {
   const loadDashboard = async (projectId) => {
     const data = await api(`/api/projects/${projectId}/dashboard`);
     setDashboard(data);
-
-    if (!deliverableForm.team_id && data.teams[0]) {
-      setDeliverableForm((current) => ({ ...current, team_id: String(data.teams[0].id) }));
-    }
-    if (!editDeliverableId && data.deliverables[0]) {
-      setEditDeliverableId(String(data.deliverables[0].id));
-      setEditForm(deliverableToForm(data.deliverables[0]));
-    }
     return data;
   };
 
@@ -3861,36 +4053,9 @@ function App() {
     })();
   }, []);
 
-  useEffect(() => {
-    if (!dashboard || !editDeliverableId) {
-      return;
-    }
-    const deliverable = dashboard.deliverables.find(
-      (item) => String(item.id) === String(editDeliverableId)
-    );
-    if (deliverable) {
-      setEditForm(deliverableToForm(deliverable));
-    }
-  }, [dashboard, editDeliverableId]);
-
-  const submitJson = async (path, method, payload, onDone) => {
-    setSubmitting(true);
-    try {
-      await api(path, { method, body: JSON.stringify(payload) });
-      notify(onDone.message, "success");
-      onDone.reset();
-      await refreshWorkspace();
-    } catch (error) {
-      notify(error.message, "error");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const goToPortfolio = () => {
     setSelectedProjectId(null);
     setDashboard(null);
-    setEditDeliverableId("");
   };
 
   const handleProjectDeleted = async () => {
@@ -3903,9 +4068,6 @@ function App() {
     try {
       await loadDashboard(projectId);
       setSelectedProjectId(projectId);
-      setDeliverableForm({ ...DEFAULT_DELIVERABLE, team_id: "" });
-      setEditDeliverableId("");
-      setEditForm(DEFAULT_DELIVERABLE);
     } catch (error) {
       notify(error.message, "error");
     } finally {
@@ -3936,62 +4098,9 @@ function App() {
     }
   };
 
-  const handleDeliverableSubmit = (event) => {
-    event.preventDefault();
-    submitJson(
-      `/api/projects/${selectedProjectId}/deliverables`,
-      "POST",
-      {
-        ...deliverableForm,
-        team_id: Number(deliverableForm.team_id),
-        progress: Number(deliverableForm.progress),
-        dependency_ids: deliverableForm.dependency_ids.map(Number),
-        contributor_team_ids: (deliverableForm.contributor_team_ids || []).map(Number),
-        jira_keys: deliverableForm.jira_keys || [],
-        current_start: deliverableForm.current_start || null,
-        current_end: deliverableForm.current_end || null,
-      },
-      {
-        message: "Deliverable created.",
-        reset: () => setDeliverableForm({
-          ...DEFAULT_DELIVERABLE,
-          team_id: dashboard.teams[0] ? String(dashboard.teams[0].id) : "",
-        }),
-      }
-    );
-  };
-
-  const handleUpdateDeliverable = (deliverableId, payload) => {
-    submitJson(
-      `/api/projects/${selectedProjectId}/deliverables/${deliverableId}`,
-      "PUT",
-      payload,
-      {
-        message: "Deliverable updated.",
-        reset: () => {},
-      }
-    );
-  };
-
-  const handleUpdateSubmit = (event) => {
-    event.preventDefault();
-    if (!editDeliverableId) {
-      return;
-    }
-    handleUpdateDeliverable(Number(editDeliverableId), {
-      ...editForm,
-      team_id: Number(editForm.team_id),
-      progress: Number(editForm.progress),
-      dependency_ids: editForm.dependency_ids.map(Number),
-      contributor_team_ids: (editForm.contributor_team_ids || []).map(Number),
-      current_start: editForm.current_start || null,
-      current_end: editForm.current_end || null,
-    });
-  };
-
-  // Milestone writes report success back to the caller so a form can clear itself
-  // only when the save actually landed — `submitJson` swallows the outcome.
-  const runMilestoneRequest = async (path, method, payload, message) => {
+  // Every write reports success back to the caller, so a modal editor closes only
+  // when the save actually landed and keeps the typed values on screen otherwise.
+  const runRequest = async (path, method, payload, message) => {
     setSubmitting(true);
     try {
       await api(path, payload === null ? { method } : { method, body: JSON.stringify(payload) });
@@ -4006,23 +4115,40 @@ function App() {
     }
   };
 
+  const deliverableActions = {
+    create: (payload) =>
+      runRequest(
+        `/api/projects/${selectedProjectId}/deliverables`,
+        "POST",
+        payload,
+        "Deliverable created."
+      ),
+    update: (deliverableId, payload) =>
+      runRequest(
+        `/api/projects/${selectedProjectId}/deliverables/${deliverableId}`,
+        "PUT",
+        payload,
+        "Deliverable updated."
+      ),
+  };
+
   const milestoneActions = {
     create: (deliverableId, payload) =>
-      runMilestoneRequest(
+      runRequest(
         `/api/deliverables/${deliverableId}/milestones`,
         "POST",
         payload,
         "Milestone created."
       ),
     update: (milestoneId, payload) =>
-      runMilestoneRequest(
+      runRequest(
         `/api/milestones/${milestoneId}`,
         "PUT",
         payload,
         "Milestone updated."
       ),
     remove: (milestoneId) =>
-      runMilestoneRequest(
+      runRequest(
         `/api/milestones/${milestoneId}`,
         "DELETE",
         null,
@@ -4081,18 +4207,10 @@ function App() {
             <${WorkspaceView}
               dashboard=${dashboard}
               onBack=${goToPortfolio}
-              deliverableForm=${deliverableForm}
-              setDeliverableForm=${setDeliverableForm}
-              editDeliverableId=${editDeliverableId}
-              setEditDeliverableId=${setEditDeliverableId}
-              editForm=${editForm}
-              setEditForm=${setEditForm}
               csvFile=${csvFile}
               setCsvFile=${setCsvFile}
-              onDeliverableSubmit=${handleDeliverableSubmit}
-              onUpdateSubmit=${handleUpdateSubmit}
               onCsvSubmit=${handleCsvSubmit}
-              onInlineSave=${handleUpdateDeliverable}
+              deliverableActions=${deliverableActions}
               milestoneActions=${milestoneActions}
               onNotify=${notify}
               onWorkspaceRefresh=${refreshWorkspace}

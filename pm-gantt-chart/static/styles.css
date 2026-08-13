@@ -161,6 +161,14 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* Sits right under the description, so the date the whole plan aims at reads
+   without opening the edit drawer. */
+.hero-release {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-weight: 600;
+}
+
 .hero-meta {
   margin-top: 18px;
   display: flex;
@@ -302,6 +310,27 @@ button {
 
 .field select[multiple] {
   min-height: 120px;
+}
+
+/* Accent color reduced to a swatch beside the release date. The `.field-wide`
+   prefix is what beats the full-width input rule above on specificity. */
+.release-row-inputs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.release-row-inputs input[type="date"] {
+  flex: 1;
+}
+
+.field-wide .color-swatch {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  padding: 3px;
+  border-radius: 12px;
+  cursor: pointer;
 }
 
 .actions {
@@ -651,6 +680,93 @@ button {
   gap: 8px;
 }
 
+/* ------------------------------------------------------- deliverable roster */
+/* Title and copy on the left, the two actions on the right; wraps rather than
+   squeezing the buttons on a narrow window. */
+.roster-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.roster-header > div:first-child {
+  flex: 1 1 320px;
+}
+
+.roster-header h2 {
+  margin-bottom: 0;
+}
+
+.roster-header .panel-copy {
+  margin: 4px 0 0;
+}
+
+.roster-header .actions {
+  margin: 0;
+}
+
+.roster-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+/* Same surface treatment as .milestone-list-row so a deliverable and its
+   milestones read as one family of rows. */
+.roster-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-strong);
+}
+
+.roster-row .team-dot {
+  margin-top: 4px;
+}
+
+.roster-row .milestone-toggle {
+  margin-top: 6px;
+}
+
+.roster-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Indented under their parent row, with a hairline standing in for the
+   parent-child line. */
+.roster-milestones {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0 26px;
+  padding-left: 14px;
+  border-left: 2px solid var(--line);
+}
+
+/* Bulk import is a panel-within-a-panel while its toggle is open. */
+.roster-import {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: var(--surface-strong);
+}
+
+.roster-import .actions {
+  margin-top: 12px;
+}
+
+.roster-panel .empty-state {
+  margin-top: 16px;
+}
+
 .milestone-editor {
   margin-top: 16px;
   padding-top: 16px;
@@ -881,13 +997,6 @@ th {
 
 .workspace-panels {
   margin-top: 24px;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.workspace-panels .panel {
-  min-height: 100%;
 }
 
 /* Quick edit is a real modal: as an in-row absolute element it stretched the
@@ -909,6 +1018,12 @@ th {
    wider, so story summaries can breathe. */
 .inline-modal .jira-task-links.compact .jira-chip-summary {
   max-width: 260px;
+}
+
+/* DeliverableForm lays its fields out in two columns, so its modal needs the
+   room the quick edit does not. */
+.inline-modal.wide {
+  width: min(760px, 100%);
 }
 
 .inline-grid {
@@ -964,8 +1079,7 @@ th {
   }
 
   .form-grid,
-  .hero-stats,
-  .workspace-panels {
+  .hero-stats {
     grid-template-columns: 1fr;
   }
 
@@ -995,7 +1109,11 @@ th {
 }
 /* ---------------- Jira integration ---------------- */
 
+/* Sits between the Risk register and the roster panel, both of which carry the
+   same 24px top margin — without it this card's border butts against the
+   register's. */
 .jira-panel {
+  margin-top: 24px;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -1889,8 +2007,3 @@ th {
   margin-top: 4px;
 }
 
-@media (max-width: 900px) {
-  .workspace-panels {
-    grid-template-columns: 1fr;
-  }
-}
