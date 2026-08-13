@@ -1623,21 +1623,29 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
               <textarea id="project-description" rows="6" value=${projectForm.description} onInput=${(event) => setProjectForm({ ...projectForm, description: event.target.value })}></textarea>
               <span className="help-text">${DESCRIPTION_HINT}</span>
             </div>
-            <div className="field">
-              <label htmlFor="project-color">Accent color</label>
-              <input id="project-color" type="color" value=${projectForm.color} onInput=${(event) => setProjectForm({ ...projectForm, color: event.target.value })} />
-            </div>
-            <div className="field">
+            <div className="field-wide">
               <label htmlFor="project-release-date">Release date</label>
-              <input
-                id="project-release-date"
-                type="date"
-                value=${projectForm.release_date}
-                onInput=${(event) => setProjectForm({ ...projectForm, release_date: event.target.value })}
-              />
+              <div className="release-row-inputs">
+                <input
+                  id="project-color"
+                  className="color-swatch"
+                  type="color"
+                  aria-label="Accent color"
+                  title="Accent color"
+                  value=${projectForm.color}
+                  onInput=${(event) => setProjectForm({ ...projectForm, color: event.target.value })}
+                />
+                <input
+                  id="project-release-date"
+                  type="date"
+                  value=${projectForm.release_date}
+                  onInput=${(event) => setProjectForm({ ...projectForm, release_date: event.target.value })}
+                />
+              </div>
               <span className="help-text">
-                Optional — when the software becomes available to customers. It is drawn as a
-                marker on the Timeline Overview.
+                The square sets the workspace accent color. The date is optional — it is when the
+                software becomes available to customers, and is drawn as a marker on the Timeline
+                Overview.
               </span>
             </div>
             <div className="field-wide">
