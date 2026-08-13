@@ -8,12 +8,18 @@ Internal product and program management tool aligned to:
 ## Included in V2 Prototype
 
 - Portfolio landing page with project cards
-- Project-scoped workspaces (teams/tasks isolated per project)
+- Project-scoped workspaces (teams/deliverables isolated per project)
 - Editable workspaces (rename, recolor, re-describe, delete) from the workspace hero
 - Timeline-first workspace layout
-- Inline timeline task editing popover
+- Inline timeline deliverable editing popover, including Jira story linking
 - Dependency tracking and risk calculations
-- Task/team forms and CSV import below timeline
+- Deliverable/team forms and CSV import below timeline
+- Jira story status filter (Jira's `done` category is hidden by default, per project)
+- Optional "Show Jira stories" timeline overlay with each story's Jira
+  relationships (blocks / is blocked by / relates to / subtasks)
+
+"Project deliverables" encompass project features and enhancements — the concept
+was called "tasks" through V2.
 
 ## Run locally
 
@@ -36,9 +42,16 @@ uvicorn after editing it, then check `GET /api/jira/health`.
 - `DELETE /api/projects/{project_id}`
 - `GET /api/projects/{project_id}/dashboard`
 - `POST /api/projects/{project_id}/teams`
-- `POST /api/projects/{project_id}/tasks`
-- `PUT /api/projects/{project_id}/tasks/{task_id}`
+- `GET /api/projects/{project_id}/deliverables`
+- `POST /api/projects/{project_id}/deliverables`
+- `PUT /api/projects/{project_id}/deliverables/{deliverable_id}`
+- `DELETE /api/projects/{project_id}/deliverables/{deliverable_id}`
 - `POST /api/projects/{project_id}/import/csv`
+- `GET /api/projects/{project_id}/jira/deliverable-links` (bulk, backs the timeline overlay)
+- `GET|POST|DELETE /api/deliverables/{deliverable_id}/jira[/links[/{link_id}]]`
+
+Legacy databases are migrated in place on startup: the `task*` tables and
+columns are renamed to `deliverable*`.
 
 ## CSV columns
 
@@ -48,4 +61,5 @@ Use these headers for bulk import:
 title,team,description,planned_start,planned_end,current_start,current_end,status,progress,dependencies
 ```
 
-`dependencies` accepts task titles separated by commas or pipes.
+`dependencies` accepts deliverable titles separated by commas or pipes. The CSV
+headers are unchanged by the deliverables rename.

@@ -8,8 +8,10 @@ const html = htm.bind((type, props, ...children) =>
 );
 const STATUS_OPTIONS = ["planned", "in_progress", "blocked", "done"];
 const ISSUE_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
+const STATUS_FILTER_PREFIX = "pm-tool.jira-status-filter.";
+const GANTT_JIRA_PREFIX = "pm-tool.gantt-jira.";
 const DEFAULT_PROJECT = { name: "", description: "", color: "#0f766e" };
-const DEFAULT_TASK = {
+const DEFAULT_DELIVERABLE = {
   title: "",
   description: "",
   team_id: "",
@@ -92,6 +94,105 @@ function jiraStatusClass(category) {
   return "jira-status-pill todo";
 }
 
+function readStored(key, fallback) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw === null ? fallback : JSON.parse(raw);
+  } catch (err) {
+    return fallback;
+  }
+}
+
+function writeStored(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    // Private mode or a full quota: the preference just won't survive a reload.
+  }
+}
+
+// Shared Jira story status filter for one project. `overrides` holds only the
+// statuses the user has explicitly toggled, so anything in Jira's `done`
+// category is hidden with zero clicks and a status that shows up later still
+// inherits that default.
+function useJiraStatusFilter(projectId) {
+  const storageKey = `${STATUS_FILTER_PREFIX}${projectId}`;
+  const [overrides, setOverrides] = useState(() => readStored(storageKey, {}));
+  // Discovered statuses, name -> status category, fed by every loader.
+  const [statuses, setStatuses] = useState({});
+
+  useEffect(() => {
+    setOverrides(readStored(`${STATUS_FILTER_PREFIX}${projectId}`, {}));
+    setStatuses({});
+  }, [projectId]);
+
+  const isVisible = (issue) => {
+    const status = issue && issue.status;
+    if (!status) return true;
+    const override = overrides[status];
+    return override === undefined ? (issue.status_category || "") !== "done" : override;
+  };
+
+  const registerStatuses = (issues) => {
+    setStatuses((current) => {
+      let next = current;
+      for (const issue of issues || []) {
+        if (!issue || !issue.status || next[issue.status] !== undefined) continue;
+        if (next === current) next = { ...current };
+        next[issue.status] = issue.status_category || "";
+      }
+      return next;
+    });
+  };
+
+  const toggle = (status) => {
+    const category = statuses[status] || "";
+    const visible = isVisible({ status, status_category: category });
+    const next = { ...overrides, [status]: !visible };
+    writeStored(storageKey, next);
+    setOverrides(next);
+  };
+
+  const apply = (issues) => (issues || []).filter(isVisible);
+
+  return { statuses, isVisible, registerStatuses, toggle, apply };
+}
+
+function JiraStatusFilter({ filter, issues, compact }) {
+  const names = Object.keys(filter.statuses).sort();
+  if (!names.length) return null;
+
+  const counts = {};
+  for (const issue of issues || []) {
+    if (issue && issue.status) counts[issue.status] = (counts[issue.status] || 0) + 1;
+  }
+  const hidden = (issues || []).length - filter.apply(issues).length;
+
+  return html`
+    <div className=${`jira-status-filter ${compact ? "compact" : ""}`}>
+      <span className="help-text">Story status</span>
+      ${names.map((name) => {
+        const category = filter.statuses[name];
+        const visible = filter.isVisible({ status: name, status_category: category });
+        const count = counts[name];
+        return html`
+          <button
+            key=${name}
+            type="button"
+            className=${`jira-status-chip ${category} ${visible ? "selected" : ""}`}
+            aria-pressed=${visible}
+            onClick=${() => filter.toggle(name)}
+          >
+            ${name}
+            ${count ? html`<span className="jira-status-chip-count">${count}</span>` : null}
+          </button>
+        `;
+      })}
+      ${hidden ? html`<span className="help-text">${hidden} hidden</span>` : null}
+    </div>
+  `;
+}
+
 function PencilIcon() {
   return html`
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
@@ -112,8 +213,20 @@ function BackArrowIcon() {
   `;
 }
 
-function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, setError }) {
-  const [mode, setMode] = useState("search");
+function JiraPickerModal({
+  title,
+  teams,
+  onClose,
+  onLink,
+  submitting,
+  error,
+  setError,
+  epicKeys,
+  statusFilter,
+  linkedKeys,
+}) {
+  const hasEpics = Boolean(epicKeys && epicKeys.length);
+  const [mode, setMode] = useState(hasEpics ? "epics" : "search");
   const [jql, setJql] = useState("");
   const [keyword, setKeyword] = useState("");
   const [results, setResults] = useState([]);
@@ -122,6 +235,37 @@ function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, set
   const [pickedIssue, setPickedIssue] = useState(null);
   const [selectedTeamId, setSelectedTeamId] = useState("");
   const [searched, setSearched] = useState(false);
+  const [epicGroups, setEpicGroups] = useState(null);
+  const [loadingEpics, setLoadingEpics] = useState(false);
+  const alreadyLinked = new Set(linkedKeys || []);
+
+  const loadEpicStories = async () => {
+    setLoadingEpics(true);
+    try {
+      const groups = await Promise.all(
+        epicKeys.map(async (key) => {
+          try {
+            const issues = await api(`/api/jira/issues/${encodeURIComponent(key)}/children`);
+            return { epicKey: key, issues, error: "" };
+          } catch (err) {
+            return { epicKey: key, issues: [], error: err.message };
+          }
+        })
+      );
+      setEpicGroups(groups);
+      if (statusFilter) {
+        statusFilter.registerStatuses(groups.flatMap((group) => group.issues));
+      }
+    } finally {
+      setLoadingEpics(false);
+    }
+  };
+
+  useEffect(() => {
+    if (mode === "epics" && epicGroups === null && hasEpics && !loadingEpics) {
+      loadEpicStories();
+    }
+  }, [mode]);
 
   const runSearch = async (event) => {
     if (event) event.preventDefault();
@@ -194,6 +338,17 @@ function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, set
         </header>
 
         <div className="jira-modal-tabs">
+          ${hasEpics
+            ? html`
+                <button
+                  type="button"
+                  className=${`jira-tab ${mode === "epics" ? "active" : ""}`}
+                  onClick=${() => setMode("epics")}
+                >
+                  From linked epics
+                </button>
+              `
+            : null}
           <button
             type="button"
             className=${`jira-tab ${mode === "search" ? "active" : ""}`}
@@ -206,7 +361,7 @@ function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, set
             className=${`jira-tab ${mode === "key" ? "active" : ""}`}
             onClick=${() => setMode("key")}
           >
-            Paste key
+            Search by Jira Ticket ID
           </button>
         </div>
 
@@ -228,7 +383,80 @@ function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, set
             `
           : null}
 
-        ${mode === "search"
+        ${mode === "epics"
+          ? html`
+              ${statusFilter
+                ? html`<${JiraStatusFilter}
+                    filter=${statusFilter}
+                    issues=${(epicGroups || []).flatMap((group) => group.issues)}
+                  />`
+                : null}
+              ${loadingEpics
+                ? html`<div className="help-text">Loading stories from linked epics…</div>`
+                : html`
+                    <div className="jira-epic-picker">
+                      ${(epicGroups || []).map((group) => {
+                        const visible = statusFilter
+                          ? statusFilter.apply(group.issues)
+                          : group.issues;
+                        const hidden = group.issues.length - visible.length;
+                        return html`
+                          <div className="jira-epic-picker-group" key=${group.epicKey}>
+                            <div className="jira-epic-picker-heading">
+                              <strong>${group.epicKey}</strong>
+                              <span className="tiny-pill">${visible.length}</span>
+                              ${hidden
+                                ? html`<span className="help-text">${hidden} hidden by filter</span>`
+                                : null}
+                            </div>
+                            ${group.error
+                              ? html`<div className="jira-modal-error">${group.error}</div>`
+                              : visible.length
+                                ? visible.map((issue) => {
+                                    const linked = alreadyLinked.has(issue.key);
+                                    return html`
+                                      <div className="jira-result-row" key=${issue.key}>
+                                        <div className="jira-result-main">
+                                          <a
+                                            className="jira-result-key"
+                                            href=${issue.url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                          >${issue.key}</a>
+                                          <span className=${jiraStatusClass(issue.status_category)}>
+                                            ${issue.status}
+                                          </span>
+                                          <span className="jira-result-type">${issue.issue_type}</span>
+                                        </div>
+                                        <div className="jira-result-summary">${issue.summary}</div>
+                                        <div className="actions">
+                                          <button
+                                            className="button-primary"
+                                            type="button"
+                                            disabled=${submitting || linked}
+                                            onClick=${() => confirmLink(issue)}
+                                          >
+                                            ${linked ? "Linked" : "Link"}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    `;
+                                  })
+                                : html`<div className="help-text">
+                                    ${group.issues.length
+                                      ? "Every story here is hidden by the status filter."
+                                      : "No child stories in Jira."}
+                                  </div>`}
+                          </div>
+                        `;
+                      })}
+                      ${epicGroups && !epicGroups.length
+                        ? html`<div className="empty-state">No epics linked to this project yet.</div>`
+                        : null}
+                    </div>
+                  `}
+            `
+          : mode === "search"
           ? html`
               <form onSubmit=${runSearch} className="jira-search-form">
                 <div className="field-wide">
@@ -350,7 +578,7 @@ function JiraPickerModal({ title, teams, onClose, onLink, submitting, error, set
   `;
 }
 
-function JiraEpicChildren({ epicKey }) {
+function JiraEpicChildren({ epicKey, statusFilter }) {
   const [children, setChildren] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -362,6 +590,7 @@ function JiraEpicChildren({ epicKey }) {
     try {
       const data = await api(`/api/jira/issues/${encodeURIComponent(epicKey)}/children`);
       setChildren(data);
+      if (statusFilter) statusFilter.registerStatuses(data);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -377,6 +606,9 @@ function JiraEpicChildren({ epicKey }) {
     }
   };
 
+  const visible = statusFilter && children ? statusFilter.apply(children) : children;
+  const hidden = children ? children.length - (visible || []).length : 0;
+
   return html`
     <div className="jira-children">
       <button className="jira-children-toggle" type="button" onClick=${toggle}>
@@ -387,10 +619,10 @@ function JiraEpicChildren({ epicKey }) {
           ? html`<div className="help-text">Loading stories…</div>`
           : error
             ? html`<div className="jira-modal-error">${error}</div>`
-            : children && children.length
+            : visible && visible.length
               ? html`
                   <ul className="jira-children-list">
-                    ${children.map(
+                    ${visible.map(
                       (child) => html`
                         <li key=${child.key}>
                           <a href=${child.url} target="_blank" rel="noreferrer">${child.key}</a>
@@ -401,15 +633,24 @@ function JiraEpicChildren({ epicKey }) {
                         </li>
                       `
                     )}
+                    ${hidden
+                      ? html`<li className="help-text">
+                          ${hidden} hidden by the status filter.
+                        </li>`
+                      : null}
                   </ul>
                 `
-              : html`<div className="help-text">No child stories in Jira.</div>`
+              : html`<div className="help-text">
+                  ${hidden
+                    ? `All ${hidden} stories are hidden by the status filter.`
+                    : "No child stories in Jira."}
+                </div>`
         : null}
     </div>
   `;
 }
 
-function JiraProjectPanel({ projectId, teams, onMessage }) {
+function JiraProjectPanel({ projectId, teams, onMessage, statusFilter, onEpicsLoaded }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
@@ -417,12 +658,18 @@ function JiraProjectPanel({ projectId, teams, onMessage }) {
   const [pickerError, setPickerError] = useState("");
   const [trouble, setTrouble] = useState("");
 
+  const publishEpicKeys = (payload) => {
+    if (typeof onEpicsLoaded !== "function") return;
+    onEpicsLoaded(((payload && payload.links) || []).map((link) => link.issue.key));
+  };
+
   const load = async () => {
     if (!projectId) return;
     setLoading(true);
     try {
       const payload = await api(`/api/projects/${projectId}/jira`);
       setData(payload);
+      publishEpicKeys(payload);
     } catch (err) {
       onMessage(err.message, "error");
     } finally {
@@ -441,6 +688,7 @@ function JiraProjectPanel({ projectId, teams, onMessage }) {
     try {
       const payload = await api(`/api/projects/${projectId}/jira/sync`, { method: "POST" });
       setData(payload);
+      publishEpicKeys(payload);
       onMessage("Refreshed epics from Jira.", "success");
     } catch (err) {
       onMessage(err.message, "error");
@@ -517,6 +765,8 @@ function JiraProjectPanel({ projectId, teams, onMessage }) {
 
       ${data && data.stale ? html`<div className="help-text">Showing cached data — refresh failed.</div>` : null}
 
+      ${statusFilter ? html`<${JiraStatusFilter} filter=${statusFilter} />` : null}
+
       ${groups.map(
         (group) => html`
           <div className="jira-team-group" key=${group.team ? group.team.id : "unassigned"}>
@@ -544,7 +794,7 @@ function JiraProjectPanel({ projectId, teams, onMessage }) {
                           : null}
                       </div>
                       <div className="jira-link-summary">${link.issue.summary}</div>
-                      <${JiraEpicChildren} epicKey=${link.issue.key} />
+                      <${JiraEpicChildren} epicKey=${link.issue.key} statusFilter=${statusFilter} />
                       <div className="actions">
                         <button className="button-secondary" type="button" onClick=${() => unlink(link)}>
                           Unlink
@@ -575,7 +825,14 @@ function JiraProjectPanel({ projectId, teams, onMessage }) {
   `;
 }
 
-function JiraTaskLinks({ taskId, onMessage }) {
+function JiraDeliverableLinks({
+  deliverableId,
+  onMessage,
+  epicKeys,
+  statusFilter,
+  onLinked,
+  compact,
+}) {
   const [links, setLinks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
@@ -583,11 +840,12 @@ function JiraTaskLinks({ taskId, onMessage }) {
   const [pickerError, setPickerError] = useState("");
 
   const load = async () => {
-    if (!taskId) return;
+    if (!deliverableId) return;
     setLoading(true);
     try {
-      const payload = await api(`/api/tasks/${taskId}/jira`);
+      const payload = await api(`/api/deliverables/${deliverableId}/jira`);
       setLinks(payload);
+      if (statusFilter) statusFilter.registerStatuses(payload.map((link) => link.issue));
     } catch (err) {
       onMessage(err.message, "error");
     } finally {
@@ -598,19 +856,24 @@ function JiraTaskLinks({ taskId, onMessage }) {
   useEffect(() => {
     setLinks([]);
     load();
-  }, [taskId]);
+  }, [deliverableId]);
+
+  const notifyLinked = () => {
+    if (typeof onLinked === "function") onLinked();
+  };
 
   const linkIssue = async (payload) => {
     setSubmitting(true);
     setPickerError("");
     try {
-      await api(`/api/tasks/${taskId}/jira/links`, {
+      await api(`/api/deliverables/${deliverableId}/jira/links`, {
         method: "POST",
         body: JSON.stringify(payload),
       });
       setShowPicker(false);
-      onMessage(`Linked ${payload.jira_key} to task.`, "success");
+      onMessage(`Linked ${payload.jira_key} to deliverable.`, "success");
       await load();
+      notifyLinked();
     } catch (err) {
       setPickerError(err.message);
     } finally {
@@ -621,9 +884,10 @@ function JiraTaskLinks({ taskId, onMessage }) {
   const unlink = async (link) => {
     setLoading(true);
     try {
-      await api(`/api/tasks/${taskId}/jira/links/${link.id}`, { method: "DELETE" });
+      await api(`/api/deliverables/${deliverableId}/jira/links/${link.id}`, { method: "DELETE" });
       onMessage(`Unlinked ${link.issue.key}.`, "success");
       await load();
+      notifyLinked();
     } catch (err) {
       onMessage(err.message, "error");
     } finally {
@@ -632,11 +896,11 @@ function JiraTaskLinks({ taskId, onMessage }) {
   };
 
   return html`
-    <div className="jira-task-links">
+    <div className=${`jira-task-links ${compact ? "compact" : ""}`}>
       <div className="jira-task-header">
-        <strong>Jira issues</strong>
+        <strong>Jira stories</strong>
         <button className="button-secondary" type="button" onClick=${() => { setPickerError(""); setShowPicker(true); }}>
-          Link issue
+          Link story
         </button>
       </div>
       ${loading && !links.length
@@ -661,17 +925,20 @@ function JiraTaskLinks({ taskId, onMessage }) {
                 )}
               </div>
             `
-          : html`<div className="help-text">No Jira issues linked to this task yet.</div>`}
+          : html`<div className="help-text">No Jira stories linked to this deliverable yet.</div>`}
       ${showPicker
         ? html`
             <${JiraPickerModal}
-              title="Link Jira issue to task"
+              title="Link Jira story to deliverable"
               teams=${null}
               onClose=${() => setShowPicker(false)}
               onLink=${linkIssue}
               submitting=${submitting}
               error=${pickerError}
               setError=${setPickerError}
+              epicKeys=${epicKeys}
+              statusFilter=${statusFilter}
+              linkedKeys=${links.map((link) => link.issue.key)}
             />
           `
         : null}
@@ -679,19 +946,19 @@ function JiraTaskLinks({ taskId, onMessage }) {
   `;
 }
 
-function taskToForm(task) {
+function deliverableToForm(deliverable) {
   return {
-    title: task.title,
-    description: task.description,
-    team_id: String(task.team_id),
-    planned_start: task.planned_start,
-    planned_end: task.planned_end,
-    current_start: task.current_start || "",
-    current_end: task.current_end || "",
-    status: task.status,
-    progress: task.progress,
-    dependency_ids: task.dependency_ids.map(String),
-    contributor_team_ids: (task.contributor_team_ids || []).map(String),
+    title: deliverable.title,
+    description: deliverable.description,
+    team_id: String(deliverable.team_id),
+    planned_start: deliverable.planned_start,
+    planned_end: deliverable.planned_end,
+    current_start: deliverable.current_start || "",
+    current_end: deliverable.current_end || "",
+    status: deliverable.status,
+    progress: deliverable.progress,
+    dependency_ids: deliverable.dependency_ids.map(String),
+    contributor_team_ids: (deliverable.contributor_team_ids || []).map(String),
     jira_keys: [],
   };
 }
@@ -763,9 +1030,9 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
               </div>
               <p className="panel-copy">${project.description || "No description yet."}</p>
               <div className="project-stats">
-                <span className="tiny-pill">${project.total_tasks} tasks</span>
+                <span className="tiny-pill">${project.total_deliverables} deliverables</span>
                 <span className="tiny-pill">${project.total_teams} teams</span>
-                <span className="tiny-pill">${project.at_risk_tasks} at risk</span>
+                <span className="tiny-pill">${project.at_risk_deliverables} at risk</span>
               </div>
               <div className="actions">
                 <button className="button-primary" type="button" onClick=${() => onOpenProject(project.id)}>
@@ -804,7 +1071,18 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
   `;
 }
 
-function TaskForm({ teams, tasks, form, setForm, onSubmit, submitLabel, submitting, showJiraPicker }) {
+function DeliverableForm({
+  teams,
+  deliverables,
+  form,
+  setForm,
+  onSubmit,
+  submitLabel,
+  submitting,
+  showJiraPicker,
+  epicKeys,
+  statusFilter,
+}) {
   const handleField = (key) => (event) => setForm({ ...form, [key]: event.target.value });
   const handleDependencies = (event) => {
     const values = Array.from(event.target.selectedOptions).map((option) => option.value);
@@ -918,7 +1196,11 @@ function TaskForm({ teams, tasks, form, setForm, onSubmit, submitLabel, submitti
         <div className="field-wide">
           <label htmlFor=${`${submitLabel}-dependencies`}>Upstream dependencies</label>
           <select id=${`${submitLabel}-dependencies`} multiple value=${form.dependency_ids} onChange=${handleDependencies}>
-            ${tasks.map((task) => html`<option key=${task.id} value=${task.id}>${task.title}</option>`)}
+            ${deliverables.map(
+              (deliverable) => html`
+                <option key=${deliverable.id} value=${deliverable.id}>${deliverable.title}</option>
+              `
+            )}
           </select>
         </div>
 
@@ -976,6 +1258,9 @@ function TaskForm({ teams, tasks, form, setForm, onSubmit, submitLabel, submitti
               submitting=${false}
               error=${pickerError}
               setError=${setPickerError}
+              epicKeys=${epicKeys}
+              statusFilter=${statusFilter}
+              linkedKeys=${pendingKeys}
             />
           `
         : null}
@@ -983,11 +1268,24 @@ function TaskForm({ teams, tasks, form, setForm, onSubmit, submitLabel, submitti
   `;
 }
 
-function InlineEditPopover({ task, form, setForm, onSave, onCancel, submitting }) {
+function InlineEditPopover({
+  deliverable,
+  form,
+  setForm,
+  onSave,
+  onCancel,
+  submitting,
+  onMessage,
+  epicKeys,
+  statusFilter,
+  onLinksChanged,
+}) {
   const handleField = (key) => (event) => setForm({ ...form, [key]: event.target.value });
+  // A plain div, not a form: the story picker it now hosts renders its own
+  // forms, and nesting forms is invalid.
   return html`
-    <form className="inline-popover" onSubmit=${(event) => { event.preventDefault(); onSave(); }}>
-      <strong>Quick edit: ${task.title}</strong>
+    <div className="inline-popover">
+      <strong>Quick edit: ${deliverable.title}</strong>
       <div className="inline-grid">
         <label>
           Status
@@ -1009,59 +1307,159 @@ function InlineEditPopover({ task, form, setForm, onSave, onCancel, submitting }
         </label>
       </div>
       <div className="actions">
-        <button className="button-primary" type="submit" disabled=${submitting} aria-busy=${submitting}>Save</button>
+        <button
+          className="button-primary"
+          type="button"
+          onClick=${onSave}
+          disabled=${submitting}
+          aria-busy=${submitting}
+        >Save</button>
         <button className="button-secondary" type="button" onClick=${onCancel}>Cancel</button>
       </div>
-    </form>
+      <${JiraDeliverableLinks}
+        deliverableId=${deliverable.id}
+        onMessage=${onMessage}
+        epicKeys=${epicKeys}
+        statusFilter=${statusFilter}
+        onLinked=${onLinksChanged}
+        compact=${true}
+      />
+    </div>
   `;
 }
 
-function GanttRow({ task, timeline, barRefs, isEditing, onOpenInline, inlineControls }) {
-  const start = startOfDay(task.current_start || task.planned_start);
-  const end = startOfDay(task.current_end || task.planned_end);
+function GanttStoryList({ links, statusFilter }) {
+  const [expanded, setExpanded] = useState({});
+  const visible = statusFilter
+    ? links.filter((link) => statusFilter.isVisible(link.issue))
+    : links;
+  const hidden = links.length - visible.length;
+
+  const toggle = (key) =>
+    setExpanded((current) => ({ ...current, [key]: !current[key] }));
+
+  if (!links.length) {
+    return html`<div className="gantt-story-list">
+      <span className="help-text">No Jira stories linked.</span>
+    </div>`;
+  }
+
+  return html`
+    <div className="gantt-story-list">
+      <span className="tiny-pill">Jira ${visible.length}</span>
+      ${visible.map((link) => {
+        const issue = link.issue;
+        const open = Boolean(expanded[issue.key]);
+        const related = issue.links || [];
+        return html`
+          <div className="gantt-story" key=${link.id}>
+            <div className="gantt-story-main">
+              <button
+                type="button"
+                className="gantt-story-toggle"
+                aria-expanded=${open}
+                onClick=${() => toggle(issue.key)}
+                title=${related.length ? "Show Jira relationships" : "No Jira relationships"}
+              >${open ? "−" : "+"}</button>
+              <a href=${issue.url} target="_blank" rel="noreferrer" className="jira-result-key">
+                ${issue.key}
+              </a>
+              <span className=${jiraStatusClass(issue.status_category)}>${issue.status}</span>
+              <span className="gantt-story-summary">${issue.summary}</span>
+            </div>
+            ${open
+              ? related.length
+                ? html`
+                    <ul className="gantt-story-links">
+                      ${related.map(
+                        (ref) => html`
+                          <li key=${`${ref.relation}-${ref.key}`}>
+                            <span className="gantt-story-relation">${ref.relation}</span>
+                            <a href=${ref.url} target="_blank" rel="noreferrer">${ref.key}</a>
+                            ${ref.status
+                              ? html`<span className=${jiraStatusClass(ref.status_category)}>
+                                  ${ref.status}
+                                </span>`
+                              : null}
+                            <span className="gantt-story-summary">${ref.summary}</span>
+                          </li>
+                        `
+                      )}
+                    </ul>
+                  `
+                : html`<div className="help-text">No linked issues or subtasks in Jira.</div>`
+              : null}
+          </div>
+        `;
+      })}
+      ${hidden ? html`<span className="help-text">${hidden} hidden by the status filter.</span>` : null}
+    </div>
+  `;
+}
+
+function GanttRow({
+  deliverable,
+  timeline,
+  barRefs,
+  isEditing,
+  onOpenInline,
+  inlineControls,
+  stories,
+  showStories,
+  statusFilter,
+}) {
+  const start = startOfDay(deliverable.current_start || deliverable.planned_start);
+  const end = startOfDay(deliverable.current_end || deliverable.planned_end);
   const totalDays = Math.max(differenceInDays(timeline.start, timeline.end), 1);
   const offsetDays = differenceInDays(timeline.start, start);
   const durationDays = Math.max(differenceInDays(start, end) + 1, 1);
   const left = (offsetDays / totalDays) * 100;
   const width = (durationDays / totalDays) * 100;
-  const gradient = task.delayed
+  const gradient = deliverable.delayed
     ? "linear-gradient(120deg, #b91c1c, #dc2626)"
-    : task.at_risk
+    : deliverable.at_risk
       ? "linear-gradient(120deg, #b45309, #ea580c)"
-      : `linear-gradient(120deg, ${task.team_color}, #0f172a)`;
+      : `linear-gradient(120deg, ${deliverable.team_color}, #0f172a)`;
 
   return html`
     <div className="gantt-row">
       <div className="task-cell">
-        <strong>${task.title}</strong>
-        <div>${task.description}</div>
+        <strong>${deliverable.title}</strong>
+        <div>${deliverable.description}</div>
         <div className="task-meta">
-          <span className="tiny-pill">${humanizeStatus(task.status)}</span>
-          <span className="tiny-pill">Plan: ${formatDisplayDate(task.planned_start)} - ${formatDisplayDate(task.planned_end)}</span>
-          ${task.at_risk ? html`<span className="tiny-pill">Risk: ${task.risk_level}</span>` : null}
+          <span className="tiny-pill">${humanizeStatus(deliverable.status)}</span>
+          <span className="tiny-pill">Plan: ${formatDisplayDate(deliverable.planned_start)} - ${formatDisplayDate(deliverable.planned_end)}</span>
+          ${deliverable.at_risk ? html`<span className="tiny-pill">Risk: ${deliverable.risk_level}</span>` : null}
         </div>
+        ${showStories
+          ? html`<${GanttStoryList} links=${stories || []} statusFilter=${statusFilter} />`
+          : null}
       </div>
       <div className="timeline-grid" style=${{ "--days": timeline.days.length }}>
         <button
-          ref=${(node) => { if (node) { barRefs.current[task.id] = node; } }}
-          className=${`task-bar ${task.risk_level} ${isEditing ? "editing" : ""}`}
+          ref=${(node) => { if (node) { barRefs.current[deliverable.id] = node; } }}
+          className=${`task-bar ${deliverable.risk_level} ${isEditing ? "editing" : ""}`}
           style=${{ left: `${left}%`, width: `${Math.max(width, 6)}%`, background: gradient }}
-          title=${task.risk_reasons.join(" | ") || "On track"}
-          onClick=${() => onOpenInline(task)}
+          title=${deliverable.risk_reasons.join(" | ") || "On track"}
+          onClick=${() => onOpenInline(deliverable)}
           type="button"
         >
-          <span className="bar-title">${task.title}</span>
-          <span className="bar-progress">${task.progress}%</span>
+          <span className="bar-title">${deliverable.title}</span>
+          <span className="bar-progress">${deliverable.progress}%</span>
         </button>
         ${isEditing
           ? html`
               <${InlineEditPopover}
-                task=${task}
+                deliverable=${deliverable}
                 form=${inlineControls.form}
                 setForm=${inlineControls.setForm}
                 onSave=${inlineControls.onSave}
                 onCancel=${inlineControls.onCancel}
                 submitting=${inlineControls.submitting}
+                onMessage=${inlineControls.onMessage}
+                epicKeys=${inlineControls.epicKeys}
+                statusFilter=${statusFilter}
+                onLinksChanged=${inlineControls.onLinksChanged}
               />
             `
           : null}
@@ -1070,20 +1468,67 @@ function GanttRow({ task, timeline, barRefs, isEditing, onOpenInline, inlineCont
   `;
 }
 
-function GanttChart({ teams, tasks, onInlineSave, submitting }) {
+function GanttChart({
+  projectId,
+  teams,
+  deliverables,
+  onInlineSave,
+  submitting,
+  statusFilter,
+  epicKeys,
+  onMessage,
+}) {
   const barRefs = useRef({});
   const bodyRef = useRef(null);
   const [lines, setLines] = useState([]);
-  const [editingTaskId, setEditingTaskId] = useState("");
+  const [editingDeliverableId, setEditingDeliverableId] = useState("");
   const [inlineForm, setInlineForm] = useState({ status: "planned", progress: 0, current_start: "", current_end: "" });
+  const storageKey = `${GANTT_JIRA_PREFIX}${projectId}`;
+  const [showStories, setShowStories] = useState(() => readStored(storageKey, false));
+  const [storyData, setStoryData] = useState(null);
+  const [storyLoading, setStoryLoading] = useState(false);
+  const [storyError, setStoryError] = useState("");
+
+  const loadStories = async () => {
+    setStoryLoading(true);
+    setStoryError("");
+    try {
+      const payload = await api(`/api/projects/${projectId}/jira/deliverable-links`);
+      setStoryData(payload);
+      const issues = Object.values(payload.links_by_deliverable || {})
+        .flat()
+        .map((link) => link.issue);
+      if (statusFilter) statusFilter.registerStatuses(issues);
+    } catch (err) {
+      setStoryError(err.message);
+    } finally {
+      setStoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setStoryData(null);
+    setShowStories(readStored(`${GANTT_JIRA_PREFIX}${projectId}`, false));
+  }, [projectId]);
+
+  // Nothing is fetched until the toggle is on, so the default layout is untouched.
+  useEffect(() => {
+    if (showStories && storyData === null && !storyLoading) loadStories();
+  }, [showStories, storyData]);
+
+  const toggleStories = () => {
+    const next = !showStories;
+    writeStored(storageKey, next);
+    setShowStories(next);
+  };
 
   const timeline = useMemo(() => {
-    if (!tasks.length) {
+    if (!deliverables.length) {
       const today = new Date();
       return { start: today, end: addDays(today, 14), days: [today] };
     }
-    const starts = tasks.map((task) => startOfDay(task.current_start || task.planned_start));
-    const ends = tasks.map((task) => startOfDay(task.current_end || task.planned_end));
+    const starts = deliverables.map((item) => startOfDay(item.current_start || item.planned_start));
+    const ends = deliverables.map((item) => startOfDay(item.current_end || item.planned_end));
     const min = starts.reduce((current, value) => (value < current ? value : current), starts[0]);
     const max = ends.reduce((current, value) => (value > current ? value : current), ends[0]);
     const start = addDays(min, -1);
@@ -1091,7 +1536,7 @@ function GanttChart({ teams, tasks, onInlineSave, submitting }) {
     const span = differenceInDays(start, end);
     const days = Array.from({ length: span + 1 }, (_, index) => addDays(start, index));
     return { start, end, days };
-  }, [tasks]);
+  }, [deliverables]);
 
   useLayoutEffect(() => {
     function redrawLines() {
@@ -1100,13 +1545,13 @@ function GanttChart({ teams, tasks, onInlineSave, submitting }) {
       }
       const bodyRect = bodyRef.current.getBoundingClientRect();
       const nextLines = [];
-      tasks.forEach((task) => {
-        const target = barRefs.current[task.id];
+      deliverables.forEach((deliverable) => {
+        const target = barRefs.current[deliverable.id];
         if (!target) {
           return;
         }
         const targetRect = target.getBoundingClientRect();
-        task.dependency_ids.forEach((dependencyId) => {
+        deliverable.dependency_ids.forEach((dependencyId) => {
           const source = barRefs.current[dependencyId];
           if (!source) {
             return;
@@ -1118,8 +1563,8 @@ function GanttChart({ teams, tasks, onInlineSave, submitting }) {
           const endY = targetRect.top - bodyRect.top + targetRect.height / 2;
           const bend = Math.max((endX - startX) / 2, 24);
           nextLines.push({
-            id: `${dependencyId}-${task.id}`,
-            level: task.risk_level === "none" ? "medium" : task.risk_level,
+            id: `${dependencyId}-${deliverable.id}`,
+            level: deliverable.risk_level === "none" ? "medium" : deliverable.risk_level,
             path: `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`,
           });
         });
@@ -1130,34 +1575,40 @@ function GanttChart({ teams, tasks, onInlineSave, submitting }) {
     redrawLines();
     window.addEventListener("resize", redrawLines);
     return () => window.removeEventListener("resize", redrawLines);
-  }, [tasks, timeline.days.length]);
+    // The story overlay changes row heights, so the curves have to be redrawn.
+  }, [deliverables, timeline.days.length, showStories, storyData]);
 
   const grouped = teams.map((team) => ({
     ...team,
-    tasks: tasks.filter((task) => task.team_id === team.id),
+    deliverables: deliverables.filter((deliverable) => deliverable.team_id === team.id),
   }));
 
-  const openInline = (task) => {
-    setEditingTaskId(String(task.id));
+  const linksFor = (deliverableId) => {
+    const byId = (storyData && storyData.links_by_deliverable) || {};
+    return byId[deliverableId] || byId[String(deliverableId)] || [];
+  };
+
+  const openInline = (deliverable) => {
+    setEditingDeliverableId(String(deliverable.id));
     setInlineForm({
-      status: task.status,
-      progress: task.progress,
-      current_start: task.current_start || "",
-      current_end: task.current_end || "",
+      status: deliverable.status,
+      progress: deliverable.progress,
+      current_start: deliverable.current_start || "",
+      current_end: deliverable.current_end || "",
     });
   };
 
   const saveInline = () => {
-    if (!editingTaskId) {
+    if (!editingDeliverableId) {
       return;
     }
-    onInlineSave(Number(editingTaskId), {
+    onInlineSave(Number(editingDeliverableId), {
       status: inlineForm.status,
       progress: Number(inlineForm.progress),
       current_start: inlineForm.current_start || null,
       current_end: inlineForm.current_end || null,
     });
-    setEditingTaskId("");
+    setEditingDeliverableId("");
   };
 
   return html`
@@ -1165,13 +1616,36 @@ function GanttChart({ teams, tasks, onInlineSave, submitting }) {
       <div className="gantt-toolbar">
         <div>
           <h2>Timeline overview</h2>
-          <p className="gantt-caption">Click any task bar to edit it inline without leaving the timeline view.</p>
+          <p className="gantt-caption">
+            Click any deliverable bar to edit it — and link Jira stories — without leaving the timeline view.
+          </p>
         </div>
         <div className="risk-key">
           <div className="legend-pill"><span className="legend-swatch" style=${{ background: "#166534" }}></span>No risk</div>
           <div className="legend-pill"><span className="legend-swatch" style=${{ background: "#b45309" }}></span>Dependency pressure</div>
           <div className="legend-pill"><span className="legend-swatch" style=${{ background: "#b91c1c" }}></span>Date slipped</div>
         </div>
+      </div>
+
+      <div className="gantt-jira-toggle">
+        <label>
+          <input type="checkbox" checked=${showStories} onChange=${toggleStories} />
+          Show Jira stories
+        </label>
+        ${showStories && storyLoading ? html`<span className="help-text">Loading stories…</span>` : null}
+        ${showStories && storyData && storyData.stale
+          ? html`<span className="help-text">Showing cached data — refresh failed.</span>`
+          : null}
+        ${showStories && storyError ? html`<span className="jira-modal-error">${storyError}</span>` : null}
+        ${showStories && statusFilter
+          ? html`<${JiraStatusFilter}
+              filter=${statusFilter}
+              compact=${true}
+              issues=${Object.values((storyData && storyData.links_by_deliverable) || {})
+                .flat()
+                .map((link) => link.issue)}
+            />`
+          : null}
       </div>
 
       <div className="gantt-board">
@@ -1212,27 +1686,35 @@ function GanttChart({ teams, tasks, onInlineSave, submitting }) {
                   <span className="team-dot" style=${{ background: team.color }}></span>
                   <span>${team.name}</span>
                 </div>
-                ${team.tasks.length
-                  ? team.tasks.map(
-                      (task) => html`
+                ${team.deliverables.length
+                  ? team.deliverables.map(
+                      (deliverable) => html`
                         <${GanttRow}
-                          key=${task.id}
-                          task=${task}
+                          key=${deliverable.id}
+                          deliverable=${deliverable}
                           timeline=${timeline}
                           barRefs=${barRefs}
-                          isEditing=${String(task.id) === editingTaskId}
+                          isEditing=${String(deliverable.id) === editingDeliverableId}
                           onOpenInline=${openInline}
+                          stories=${linksFor(deliverable.id)}
+                          showStories=${showStories}
+                          statusFilter=${statusFilter}
                           inlineControls=${{
                             form: inlineForm,
                             setForm: setInlineForm,
                             onSave: saveInline,
-                            onCancel: () => setEditingTaskId(""),
+                            onCancel: () => setEditingDeliverableId(""),
                             submitting,
+                            onMessage,
+                            epicKeys,
+                            onLinksChanged: () => {
+                              if (showStories) loadStories();
+                            },
                           }}
                         />
                       `
                     )
-                  : html`<div className="empty-state">No tasks for this team yet.</div>`}
+                  : html`<div className="empty-state">No deliverables for this team yet.</div>`}
               </div>
             `
           )}
@@ -1327,7 +1809,7 @@ function TeamManagerDrawer({ projectId, teams, onClose, onNotify, onChanged }) {
           <button className="button-secondary" type="button" onClick=${onClose}>Close</button>
         </header>
         <p className="panel-copy" style=${{ margin: 0 }}>
-          Add, rename, recolor, or remove teams for this project. Deletion is blocked while a team still owns or contributes to tasks.
+          Add, rename, recolor, or remove teams for this project. Deletion is blocked while a team still owns or contributes to deliverables.
         </p>
 
         <div className="team-drawer-list">
@@ -1522,7 +2004,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
         <div className="project-drawer-danger">
           <strong>Danger zone</strong>
           <p className="panel-copy" style=${{ margin: 0 }}>
-            Deleting this workspace also removes ${summary.total_tasks} task(s), ${summary.total_teams} team(s), and every Jira link on them. This cannot be undone.
+            Deleting this workspace also removes ${summary.total_deliverables} deliverable(s), ${summary.total_teams} team(s), and every Jira link on them. This cannot be undone.
           </p>
           <div className="field-wide">
             <label htmlFor="project-delete-confirm">
@@ -1552,7 +2034,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
   `;
 }
 
-function TaskTable({ tasks }) {
+function DeliverableTable({ deliverables }) {
   return html`
     <section className="table-shell" id="risk-register">
       <h2>Risk register</h2>
@@ -1560,7 +2042,7 @@ function TaskTable({ tasks }) {
       <table>
         <thead>
           <tr>
-            <th>Task</th>
+            <th>Deliverable</th>
             <th>Team</th>
             <th>Status</th>
             <th>Risk</th>
@@ -1568,17 +2050,17 @@ function TaskTable({ tasks }) {
           </tr>
         </thead>
         <tbody>
-          ${tasks.map(
-            (task) => {
-              const contributors = task.contributor_teams || [];
+          ${deliverables.map(
+            (deliverable) => {
+              const contributors = deliverable.contributor_teams || [];
               return html`
-                <tr key=${task.id}>
+                <tr key=${deliverable.id}>
                   <td>
-                    <strong>${task.title}</strong>
-                    <div className="help-text">Current end: ${task.current_end || task.planned_end}</div>
+                    <strong>${deliverable.title}</strong>
+                    <div className="help-text">Current end: ${deliverable.current_end || deliverable.planned_end}</div>
                   </td>
                   <td>
-                    ${task.team_name}
+                    ${deliverable.team_name}
                     ${contributors.length
                       ? html`<span
                           className="team-plus-pill"
@@ -1586,11 +2068,11 @@ function TaskTable({ tasks }) {
                         >+${contributors.length}</span>`
                       : null}
                   </td>
-                  <td>${humanizeStatus(task.status)}</td>
-                  <td><span className=${`risk-badge ${task.risk_level}`}>${task.risk_level}</span></td>
+                  <td>${humanizeStatus(deliverable.status)}</td>
+                  <td><span className=${`risk-badge ${deliverable.risk_level}`}>${deliverable.risk_level}</span></td>
                   <td>
-                    ${task.risk_reasons.length
-                      ? task.risk_reasons.map((reason) => html`<div key=${reason}>${reason}</div>`)
+                    ${deliverable.risk_reasons.length
+                      ? deliverable.risk_reasons.map((reason) => html`<div key=${reason}>${reason}</div>`)
                       : html`<span className="help-text">No active risk signals.</span>`}
                   </td>
                 </tr>
@@ -1606,15 +2088,15 @@ function TaskTable({ tasks }) {
 function WorkspaceView({
   dashboard,
   onBack,
-  taskForm,
-  setTaskForm,
-  editTaskId,
-  setEditTaskId,
+  deliverableForm,
+  setDeliverableForm,
+  editDeliverableId,
+  setEditDeliverableId,
   editForm,
   setEditForm,
   csvFile,
   setCsvFile,
-  onTaskSubmit,
+  onDeliverableSubmit,
   onUpdateSubmit,
   onCsvSubmit,
   onInlineSave,
@@ -1624,9 +2106,13 @@ function WorkspaceView({
   submitting,
 }) {
   const teams = dashboard.teams;
-  const tasks = dashboard.tasks;
+  const deliverables = dashboard.deliverables;
   const [teamDrawerOpen, setTeamDrawerOpen] = useState(false);
   const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
+  // Epic keys come from the Jira panel's load; the pickers use them for the
+  // "From linked epics" tab.
+  const [epicKeys, setEpicKeys] = useState([]);
+  const statusFilter = useJiraStatusFilter(dashboard.project.id);
 
   return html`
     <div className="app-shell">
@@ -1660,20 +2146,20 @@ function WorkspaceView({
             onActivate=${() => setTeamDrawerOpen(true)}
           />
           <${SummaryCard}
-            label="Tasks"
-            value=${dashboard.summary.total_tasks}
+            label="Deliverables"
+            value=${dashboard.summary.total_deliverables}
             emphasis="Jump to the timeline"
             onActivate=${() => flashScrollTarget("gantt-section")}
           />
           <${SummaryCard}
             label="At risk"
-            value=${dashboard.summary.at_risk_tasks}
+            value=${dashboard.summary.at_risk_deliverables}
             emphasis="Open the risk register"
             onActivate=${() => flashScrollTarget("risk-register")}
           />
           <${SummaryCard}
             label="Delayed"
-            value=${dashboard.summary.delayed_tasks}
+            value=${dashboard.summary.delayed_deliverables}
             emphasis="Jump to the timeline"
             onActivate=${() => flashScrollTarget("gantt-section")}
           />
@@ -1681,41 +2167,71 @@ function WorkspaceView({
       </section>
 
       <section id="gantt-section">
-        <${GanttChart} teams=${teams} tasks=${tasks} onInlineSave=${onInlineSave} submitting=${submitting} />
-        <${TaskTable} tasks=${tasks} />
+        <${GanttChart}
+          projectId=${dashboard.project.id}
+          teams=${teams}
+          deliverables=${deliverables}
+          onInlineSave=${onInlineSave}
+          submitting=${submitting}
+          statusFilter=${statusFilter}
+          epicKeys=${epicKeys}
+          onMessage=${onNotify}
+        />
+        <${DeliverableTable} deliverables=${deliverables} />
       </section>
 
-      <${JiraProjectPanel} projectId=${dashboard.project.id} teams=${teams} onMessage=${onNotify} />
+      <${JiraProjectPanel}
+        projectId=${dashboard.project.id}
+        teams=${teams}
+        onMessage=${onNotify}
+        statusFilter=${statusFilter}
+        onEpicsLoaded=${setEpicKeys}
+      />
 
       <section className="workspace-panels">
         <article className="panel">
-          <h2>Create task</h2>
-          <p className="panel-copy">Create tasks beneath the timeline so review stays chart-first.</p>
-          <${TaskForm}
+          <h2>Create deliverable</h2>
+          <p className="panel-copy">
+            Project deliverables encompass project features and enhancements. Create them beneath the
+            timeline so review stays chart-first.
+          </p>
+          <${DeliverableForm}
             teams=${teams}
-            tasks=${tasks}
-            form=${taskForm}
-            setForm=${setTaskForm}
-            onSubmit=${onTaskSubmit}
-            submitLabel="Create task"
+            deliverables=${deliverables}
+            form=${deliverableForm}
+            setForm=${setDeliverableForm}
+            onSubmit=${onDeliverableSubmit}
+            submitLabel="Create deliverable"
             submitting=${submitting}
             showJiraPicker=${true}
+            epicKeys=${epicKeys}
+            statusFilter=${statusFilter}
           />
         </article>
 
         <article className="panel">
-          <h2>Update task</h2>
+          <h2>Update deliverable</h2>
           <div className="field-wide">
-            <label htmlFor="edit-task">Task</label>
-            <select id="edit-task" value=${editTaskId} onChange=${(event) => setEditTaskId(event.target.value)}>
-              ${tasks.map((task) => html`<option key=${task.id} value=${task.id}>${task.title}</option>`)}
+            <label htmlFor="edit-deliverable">Deliverable</label>
+            <select
+              id="edit-deliverable"
+              value=${editDeliverableId}
+              onChange=${(event) => setEditDeliverableId(event.target.value)}
+            >
+              ${deliverables.map(
+                (deliverable) => html`
+                  <option key=${deliverable.id} value=${deliverable.id}>${deliverable.title}</option>
+                `
+              )}
             </select>
           </div>
-          ${editTaskId
+          ${editDeliverableId
             ? html`
-                <${TaskForm}
+                <${DeliverableForm}
                   teams=${teams}
-                  tasks=${tasks.filter((task) => String(task.id) !== String(editTaskId))}
+                  deliverables=${deliverables.filter(
+                    (deliverable) => String(deliverable.id) !== String(editDeliverableId)
+                  )}
                   form=${editForm}
                   setForm=${setEditForm}
                   onSubmit=${onUpdateSubmit}
@@ -1723,14 +2239,19 @@ function WorkspaceView({
                   submitting=${submitting}
                   showJiraPicker=${false}
                 />
-                <${JiraTaskLinks} taskId=${Number(editTaskId)} onMessage=${onNotify} />
+                <${JiraDeliverableLinks}
+                  deliverableId=${Number(editDeliverableId)}
+                  onMessage=${onNotify}
+                  epicKeys=${epicKeys}
+                  statusFilter=${statusFilter}
+                />
               `
-            : html`<div className="empty-state">Add a task first to start tracking updates.</div>`}
+            : html`<div className="empty-state">Add a deliverable first to start tracking updates.</div>`}
         </article>
 
         <article className="panel">
           <h2>Bulk import</h2>
-          <p className="panel-copy">Import tasks for this selected project only.</p>
+          <p className="panel-copy">Import deliverables for this selected project only.</p>
           <form onSubmit=${onCsvSubmit}>
             <div className="field-wide">
               <label htmlFor="csv-file">CSV file</label>
@@ -1778,9 +2299,9 @@ function App() {
   const [dashboard, setDashboard] = useState(null);
 
   const [projectForm, setProjectForm] = useState(DEFAULT_PROJECT);
-  const [taskForm, setTaskForm] = useState(DEFAULT_TASK);
-  const [editTaskId, setEditTaskId] = useState("");
-  const [editForm, setEditForm] = useState(DEFAULT_TASK);
+  const [deliverableForm, setDeliverableForm] = useState(DEFAULT_DELIVERABLE);
+  const [editDeliverableId, setEditDeliverableId] = useState("");
+  const [editForm, setEditForm] = useState(DEFAULT_DELIVERABLE);
   const [csvFile, setCsvFile] = useState(null);
 
   const [message, setMessage] = useState("");
@@ -1798,12 +2319,12 @@ function App() {
     const data = await api(`/api/projects/${projectId}/dashboard`);
     setDashboard(data);
 
-    if (!taskForm.team_id && data.teams[0]) {
-      setTaskForm((current) => ({ ...current, team_id: String(data.teams[0].id) }));
+    if (!deliverableForm.team_id && data.teams[0]) {
+      setDeliverableForm((current) => ({ ...current, team_id: String(data.teams[0].id) }));
     }
-    if (!editTaskId && data.tasks[0]) {
-      setEditTaskId(String(data.tasks[0].id));
-      setEditForm(taskToForm(data.tasks[0]));
+    if (!editDeliverableId && data.deliverables[0]) {
+      setEditDeliverableId(String(data.deliverables[0].id));
+      setEditForm(deliverableToForm(data.deliverables[0]));
     }
     return data;
   };
@@ -1830,14 +2351,16 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!dashboard || !editTaskId) {
+    if (!dashboard || !editDeliverableId) {
       return;
     }
-    const task = dashboard.tasks.find((item) => String(item.id) === String(editTaskId));
-    if (task) {
-      setEditForm(taskToForm(task));
+    const deliverable = dashboard.deliverables.find(
+      (item) => String(item.id) === String(editDeliverableId)
+    );
+    if (deliverable) {
+      setEditForm(deliverableToForm(deliverable));
     }
-  }, [dashboard, editTaskId]);
+  }, [dashboard, editDeliverableId]);
 
   const submitJson = async (path, method, payload, onDone) => {
     setSubmitting(true);
@@ -1858,7 +2381,7 @@ function App() {
   const goToPortfolio = () => {
     setSelectedProjectId(null);
     setDashboard(null);
-    setEditTaskId("");
+    setEditDeliverableId("");
   };
 
   const handleProjectDeleted = async () => {
@@ -1871,9 +2394,9 @@ function App() {
     try {
       await loadDashboard(projectId);
       setSelectedProjectId(projectId);
-      setTaskForm({ ...DEFAULT_TASK, team_id: "" });
-      setEditTaskId("");
-      setEditForm(DEFAULT_TASK);
+      setDeliverableForm({ ...DEFAULT_DELIVERABLE, team_id: "" });
+      setEditDeliverableId("");
+      setEditForm(DEFAULT_DELIVERABLE);
     } catch (error) {
       setMessage(error.message);
       setMessageTone("error");
@@ -1903,38 +2426,38 @@ function App() {
     }
   };
 
-  const handleTaskSubmit = (event) => {
+  const handleDeliverableSubmit = (event) => {
     event.preventDefault();
     submitJson(
-      `/api/projects/${selectedProjectId}/tasks`,
+      `/api/projects/${selectedProjectId}/deliverables`,
       "POST",
       {
-        ...taskForm,
-        team_id: Number(taskForm.team_id),
-        progress: Number(taskForm.progress),
-        dependency_ids: taskForm.dependency_ids.map(Number),
-        contributor_team_ids: (taskForm.contributor_team_ids || []).map(Number),
-        jira_keys: taskForm.jira_keys || [],
-        current_start: taskForm.current_start || null,
-        current_end: taskForm.current_end || null,
+        ...deliverableForm,
+        team_id: Number(deliverableForm.team_id),
+        progress: Number(deliverableForm.progress),
+        dependency_ids: deliverableForm.dependency_ids.map(Number),
+        contributor_team_ids: (deliverableForm.contributor_team_ids || []).map(Number),
+        jira_keys: deliverableForm.jira_keys || [],
+        current_start: deliverableForm.current_start || null,
+        current_end: deliverableForm.current_end || null,
       },
       {
-        message: "Task created.",
-        reset: () => setTaskForm({
-          ...DEFAULT_TASK,
+        message: "Deliverable created.",
+        reset: () => setDeliverableForm({
+          ...DEFAULT_DELIVERABLE,
           team_id: dashboard.teams[0] ? String(dashboard.teams[0].id) : "",
         }),
       }
     );
   };
 
-  const handleUpdateTask = (taskId, payload) => {
+  const handleUpdateDeliverable = (deliverableId, payload) => {
     submitJson(
-      `/api/projects/${selectedProjectId}/tasks/${taskId}`,
+      `/api/projects/${selectedProjectId}/deliverables/${deliverableId}`,
       "PUT",
       payload,
       {
-        message: "Task updated.",
+        message: "Deliverable updated.",
         reset: () => {},
       }
     );
@@ -1942,10 +2465,10 @@ function App() {
 
   const handleUpdateSubmit = (event) => {
     event.preventDefault();
-    if (!editTaskId) {
+    if (!editDeliverableId) {
       return;
     }
-    handleUpdateTask(Number(editTaskId), {
+    handleUpdateDeliverable(Number(editDeliverableId), {
       ...editForm,
       team_id: Number(editForm.team_id),
       progress: Number(editForm.progress),
@@ -1974,7 +2497,7 @@ function App() {
       });
       setCsvFile(null);
       setMessage(
-        `Imported ${result.imported_tasks} task(s), created ${result.created_teams} team(s)` +
+        `Imported ${result.imported_deliverables} deliverable(s), created ${result.created_teams} team(s)` +
           (result.errors.length ? `. ${result.errors.length} warning(s) logged.` : ".")
       );
       setMessageTone(result.errors.length ? "error" : "success");
@@ -1999,18 +2522,18 @@ function App() {
             <${WorkspaceView}
               dashboard=${dashboard}
               onBack=${goToPortfolio}
-              taskForm=${taskForm}
-              setTaskForm=${setTaskForm}
-              editTaskId=${editTaskId}
-              setEditTaskId=${setEditTaskId}
+              deliverableForm=${deliverableForm}
+              setDeliverableForm=${setDeliverableForm}
+              editDeliverableId=${editDeliverableId}
+              setEditDeliverableId=${setEditDeliverableId}
               editForm=${editForm}
               setEditForm=${setEditForm}
               csvFile=${csvFile}
               setCsvFile=${setCsvFile}
-              onTaskSubmit=${handleTaskSubmit}
+              onDeliverableSubmit=${handleDeliverableSubmit}
               onUpdateSubmit=${handleUpdateSubmit}
               onCsvSubmit=${handleCsvSubmit}
-              onInlineSave=${handleUpdateTask}
+              onInlineSave=${handleUpdateDeliverable}
               onNotify=${(text, tone) => { setMessage(text); setMessageTone(tone || "success"); }}
               onWorkspaceRefresh=${refreshWorkspace}
               onProjectDeleted=${handleProjectDeleted}

@@ -34,7 +34,7 @@ DEFAULT_PROJECTS = [
 
 
 @dataclass
-class TaskRisk:
+class DeliverableRisk:
     delayed: bool
     at_risk: bool
     risk_level: str
@@ -64,16 +64,16 @@ def seed_data(db: Session) -> None:
         db.flush()
 
         team_map = {team.name: team.id for team in teams}
-        task_prefix = "A" if project_index == 0 else "B"
+        prefix = "A" if project_index == 0 else "B"
         start_offset = 0 if project_index == 0 else 14
 
         def d(value: date) -> date:
             return value + timedelta(days=start_offset)
 
-        tasks = [
-            models.Task(
+        deliverables = [
+            models.Deliverable(
                 project_id=project.id,
-                title=f"{task_prefix} Requirements Lock",
+                title=f"{prefix} Requirements Lock",
                 description="Freeze scope and acceptance criteria for the quarter.",
                 team_id=team_map["Core Platform"],
                 planned_start=d(date(2026, 7, 7)),
@@ -83,9 +83,9 @@ def seed_data(db: Session) -> None:
                 status="in_progress",
                 progress=80,
             ),
-            models.Task(
+            models.Deliverable(
                 project_id=project.id,
-                title=f"{task_prefix} API Contracts",
+                title=f"{prefix} API Contracts",
                 description="Finalize service contracts used by downstream teams.",
                 team_id=team_map["Core Platform"],
                 planned_start=d(date(2026, 7, 12)),
@@ -95,9 +95,9 @@ def seed_data(db: Session) -> None:
                 status="in_progress",
                 progress=55,
             ),
-            models.Task(
+            models.Deliverable(
                 project_id=project.id,
-                title=f"{task_prefix} Mobile UX Build",
+                title=f"{prefix} Mobile UX Build",
                 description="Implement the first feature wave in the mobile client.",
                 team_id=team_map["Mobile Experience"],
                 planned_start=d(date(2026, 7, 19)),
@@ -107,9 +107,9 @@ def seed_data(db: Session) -> None:
                 status="planned",
                 progress=20,
             ),
-            models.Task(
+            models.Deliverable(
                 project_id=project.id,
-                title=f"{task_prefix} Analytics Schema",
+                title=f"{prefix} Analytics Schema",
                 description="Define the event schema that supports launch reporting.",
                 team_id=team_map["Data & Analytics"],
                 planned_start=d(date(2026, 7, 14)),
@@ -119,9 +119,9 @@ def seed_data(db: Session) -> None:
                 status="in_progress",
                 progress=60,
             ),
-            models.Task(
+            models.Deliverable(
                 project_id=project.id,
-                title=f"{task_prefix} Launch Readiness",
+                title=f"{prefix} Launch Readiness",
                 description="Cross-functional milestone for launch decisioning.",
                 team_id=team_map["Data & Analytics"],
                 planned_start=d(date(2026, 7, 31)),
@@ -132,27 +132,27 @@ def seed_data(db: Session) -> None:
                 progress=0,
             ),
         ]
-        db.add_all(tasks)
+        db.add_all(deliverables)
         db.flush()
 
-        title_to_id = {task.title: task.id for task in tasks}
+        title_to_id = {deliverable.title: deliverable.id for deliverable in deliverables}
         db.add_all(
             [
-                models.TaskDependency(
-                    upstream_task_id=title_to_id[f"{task_prefix} Requirements Lock"],
-                    downstream_task_id=title_to_id[f"{task_prefix} API Contracts"],
+                models.DeliverableDependency(
+                    upstream_deliverable_id=title_to_id[f"{prefix} Requirements Lock"],
+                    downstream_deliverable_id=title_to_id[f"{prefix} API Contracts"],
                 ),
-                models.TaskDependency(
-                    upstream_task_id=title_to_id[f"{task_prefix} API Contracts"],
-                    downstream_task_id=title_to_id[f"{task_prefix} Mobile UX Build"],
+                models.DeliverableDependency(
+                    upstream_deliverable_id=title_to_id[f"{prefix} API Contracts"],
+                    downstream_deliverable_id=title_to_id[f"{prefix} Mobile UX Build"],
                 ),
-                models.TaskDependency(
-                    upstream_task_id=title_to_id[f"{task_prefix} Analytics Schema"],
-                    downstream_task_id=title_to_id[f"{task_prefix} Launch Readiness"],
+                models.DeliverableDependency(
+                    upstream_deliverable_id=title_to_id[f"{prefix} Analytics Schema"],
+                    downstream_deliverable_id=title_to_id[f"{prefix} Launch Readiness"],
                 ),
-                models.TaskDependency(
-                    upstream_task_id=title_to_id[f"{task_prefix} Mobile UX Build"],
-                    downstream_task_id=title_to_id[f"{task_prefix} Launch Readiness"],
+                models.DeliverableDependency(
+                    upstream_deliverable_id=title_to_id[f"{prefix} Mobile UX Build"],
+                    downstream_deliverable_id=title_to_id[f"{prefix} Launch Readiness"],
                 ),
             ]
         )
@@ -203,7 +203,7 @@ def update_project(
 
 
 def delete_project(db: Session, project: models.Project) -> None:
-    # Teams/tasks (and their dependencies + Jira links) cascade via the ORM, but
+    # Teams/deliverables (and their dependencies + Jira links) cascade via the ORM, but
     # project-level Jira links have no ORM cascade and SQLite does not enforce
     # the DB-level ON DELETE CASCADE, so clear them explicitly.
     db.query(models.ProjectJiraLink).filter(
@@ -227,7 +227,7 @@ def create_team(db: Session, project_id: int, payload: schemas.TeamCreate) -> mo
 
 
 class TeamInUseError(ValueError):
-    """Raised when trying to delete a team that still owns or contributes to tasks."""
+    """Raised when trying to delete a team that still owns or contributes to deliverables."""
 
 
 def update_team(
@@ -258,43 +258,44 @@ def update_team(
 def delete_team(db: Session, project_id: int, team: models.Team) -> None:
     if team.project_id != project_id:
         raise ValueError("Team does not belong to the selected project.")
-    if team.tasks:
+    if team.deliverables:
         raise TeamInUseError(
-            f"Team has {len(team.tasks)} assigned task(s); reassign them first."
+            f"Team has {len(team.deliverables)} assigned deliverable(s); reassign them first."
         )
-    if team.contributing_tasks:
+    if team.contributing_deliverables:
         raise TeamInUseError(
-            f"Team is a contributor on {len(team.contributing_tasks)} task(s); remove it there first."
+            f"Team is a contributor on {len(team.contributing_deliverables)} "
+            "deliverable(s); remove it there first."
         )
     db.delete(team)
     db.commit()
 
 
-def _task_finish(task: models.Task) -> date:
-    return task.current_end or task.planned_end
+def _deliverable_finish(deliverable: models.Deliverable) -> date:
+    return deliverable.current_end or deliverable.planned_end
 
 
-def calculate_risk(task: models.Task) -> TaskRisk:
-    actual_finish = _task_finish(task)
-    delayed = actual_finish > task.planned_end
-    delay_days = max((actual_finish - task.planned_end).days, 0)
+def calculate_risk(deliverable: models.Deliverable) -> DeliverableRisk:
+    actual_finish = _deliverable_finish(deliverable)
+    delayed = actual_finish > deliverable.planned_end
+    delay_days = max((actual_finish - deliverable.planned_end).days, 0)
 
     dependency_slip_days = 0
     risk_reasons: List[str] = []
-    for link in task.incoming_links:
-        upstream = link.upstream_task
+    for link in deliverable.incoming_links:
+        upstream = link.upstream_deliverable
         if upstream is None:
             continue
-        dependency_finish = _task_finish(upstream)
-        if dependency_finish > task.planned_start:
-            slip = (dependency_finish - task.planned_start).days
+        dependency_finish = _deliverable_finish(upstream)
+        if dependency_finish > deliverable.planned_start:
+            slip = (dependency_finish - deliverable.planned_start).days
             dependency_slip_days = max(dependency_slip_days, slip)
             risk_reasons.append(
                 f"Blocked by {upstream.title} until {dependency_finish.isoformat()}"
             )
 
     if delayed:
-        risk_reasons.insert(0, f"Task finish slipped by {delay_days} day(s)")
+        risk_reasons.insert(0, f"Deliverable finish slipped by {delay_days} day(s)")
 
     at_risk = delayed or dependency_slip_days > 0
     if delayed or dependency_slip_days >= 3:
@@ -304,7 +305,7 @@ def calculate_risk(task: models.Task) -> TaskRisk:
     else:
         risk_level = "none"
 
-    return TaskRisk(
+    return DeliverableRisk(
         delayed=delayed,
         at_risk=at_risk,
         risk_level=risk_level,
@@ -314,40 +315,40 @@ def calculate_risk(task: models.Task) -> TaskRisk:
     )
 
 
-def list_tasks(db: Session, project_id: int) -> List[models.Task]:
+def list_deliverables(db: Session, project_id: int) -> List[models.Deliverable]:
     stmt = (
-        select(models.Task)
-        .where(models.Task.project_id == project_id)
+        select(models.Deliverable)
+        .where(models.Deliverable.project_id == project_id)
         .options(
-            selectinload(models.Task.team),
-            selectinload(models.Task.contributor_teams),
-            selectinload(models.Task.incoming_links).selectinload(
-                models.TaskDependency.upstream_task
+            selectinload(models.Deliverable.team),
+            selectinload(models.Deliverable.contributor_teams),
+            selectinload(models.Deliverable.incoming_links).selectinload(
+                models.DeliverableDependency.upstream_deliverable
             ),
         )
-        .order_by(models.Task.planned_start, models.Task.id)
+        .order_by(models.Deliverable.planned_start, models.Deliverable.id)
     )
     return list(db.scalars(stmt).unique())
 
 
-def serialize_task(task: models.Task) -> schemas.TaskRead:
-    risk = calculate_risk(task)
-    contributors = sorted(task.contributor_teams, key=lambda team: team.name)
-    return schemas.TaskRead(
-        id=task.id,
-        project_id=task.project_id,
-        title=task.title,
-        description=task.description,
-        team_id=task.team_id,
-        team_name=task.team.name,
-        team_color=task.team.color,
-        planned_start=task.planned_start,
-        planned_end=task.planned_end,
-        current_start=task.current_start,
-        current_end=task.current_end,
-        status=task.status,
-        progress=task.progress,
-        dependency_ids=[link.upstream_task_id for link in task.incoming_links],
+def serialize_deliverable(deliverable: models.Deliverable) -> schemas.DeliverableRead:
+    risk = calculate_risk(deliverable)
+    contributors = sorted(deliverable.contributor_teams, key=lambda team: team.name)
+    return schemas.DeliverableRead(
+        id=deliverable.id,
+        project_id=deliverable.project_id,
+        title=deliverable.title,
+        description=deliverable.description,
+        team_id=deliverable.team_id,
+        team_name=deliverable.team.name,
+        team_color=deliverable.team.color,
+        planned_start=deliverable.planned_start,
+        planned_end=deliverable.planned_end,
+        current_start=deliverable.current_start,
+        current_end=deliverable.current_end,
+        status=deliverable.status,
+        progress=deliverable.progress,
+        dependency_ids=[link.upstream_deliverable_id for link in deliverable.incoming_links],
         contributor_team_ids=[team.id for team in contributors],
         contributor_teams=[schemas.TeamRef.model_validate(team) for team in contributors],
         delayed=risk.delayed,
@@ -359,35 +360,37 @@ def serialize_task(task: models.Task) -> schemas.TaskRead:
     )
 
 
-def replace_dependencies(db: Session, task: models.Task, dependency_ids: Iterable[int]) -> None:
+def replace_dependencies(
+    db: Session, deliverable: models.Deliverable, dependency_ids: Iterable[int]
+) -> None:
     dependency_ids = list(dict.fromkeys(dependency_ids))
-    if task.id in dependency_ids:
-        raise ValueError("A task cannot depend on itself.")
+    if deliverable.id in dependency_ids:
+        raise ValueError("A deliverable cannot depend on itself.")
 
-    db.query(models.TaskDependency).filter(
-        models.TaskDependency.downstream_task_id == task.id
+    db.query(models.DeliverableDependency).filter(
+        models.DeliverableDependency.downstream_deliverable_id == deliverable.id
     ).delete(synchronize_session=False)
 
     for dependency_id in dependency_ids:
-        dependency = db.get(models.Task, dependency_id)
+        dependency = db.get(models.Deliverable, dependency_id)
         if dependency is None:
-            raise ValueError(f"Dependency task {dependency_id} does not exist.")
-        if dependency.project_id != task.project_id:
+            raise ValueError(f"Dependency deliverable {dependency_id} does not exist.")
+        if dependency.project_id != deliverable.project_id:
             raise ValueError("Dependencies must belong to the same project.")
         db.add(
-            models.TaskDependency(
-                upstream_task_id=dependency_id,
-                downstream_task_id=task.id,
+            models.DeliverableDependency(
+                upstream_deliverable_id=dependency_id,
+                downstream_deliverable_id=deliverable.id,
             )
         )
 
 
 def replace_contributor_teams(
-    db: Session, task: models.Task, team_ids: Iterable[int]
+    db: Session, deliverable: models.Deliverable, team_ids: Iterable[int]
 ) -> None:
     unique_ids = list(dict.fromkeys(team_ids))
     if not unique_ids:
-        task.contributor_teams = []
+        deliverable.contributor_teams = []
         return
     teams = list(
         db.scalars(select(models.Team).where(models.Team.id.in_(unique_ids))).all()
@@ -397,19 +400,21 @@ def replace_contributor_teams(
     if missing:
         raise ValueError(f"Contributor team(s) not found: {missing}")
     for team in teams:
-        if team.project_id != task.project_id:
+        if team.project_id != deliverable.project_id:
             raise ValueError("Contributor teams must belong to the same project.")
-    if task.team_id in unique_ids:
+    if deliverable.team_id in unique_ids:
         raise ValueError("The owning team cannot also be listed as a contributor.")
-    task.contributor_teams = teams
+    deliverable.contributor_teams = teams
 
 
-def create_task(db: Session, project_id: int, payload: schemas.TaskCreate) -> models.Task:
+def create_deliverable(
+    db: Session, project_id: int, payload: schemas.DeliverableCreate
+) -> models.Deliverable:
     team = db.get(models.Team, payload.team_id)
     if team is None or team.project_id != project_id:
         raise ValueError("Team does not belong to the selected project.")
 
-    task = models.Task(
+    deliverable = models.Deliverable(
         project_id=project_id,
         title=payload.title,
         description=payload.description,
@@ -421,20 +426,23 @@ def create_task(db: Session, project_id: int, payload: schemas.TaskCreate) -> mo
         status=payload.status,
         progress=payload.progress,
     )
-    db.add(task)
+    db.add(deliverable)
     db.flush()
-    replace_dependencies(db, task, payload.dependency_ids)
-    replace_contributor_teams(db, task, payload.contributor_team_ids)
+    replace_dependencies(db, deliverable, payload.dependency_ids)
+    replace_contributor_teams(db, deliverable, payload.contributor_team_ids)
     db.commit()
-    db.refresh(task)
-    return task
+    db.refresh(deliverable)
+    return deliverable
 
 
-def update_task(
-    db: Session, project_id: int, task: models.Task, payload: schemas.TaskUpdate
-) -> models.Task:
-    if task.project_id != project_id:
-        raise ValueError("Task does not belong to the selected project.")
+def update_deliverable(
+    db: Session,
+    project_id: int,
+    deliverable: models.Deliverable,
+    payload: schemas.DeliverableUpdate,
+) -> models.Deliverable:
+    if deliverable.project_id != project_id:
+        raise ValueError("Deliverable does not belong to the selected project.")
 
     updates = payload.model_dump(exclude_unset=True)
     dependency_ids = updates.pop("dependency_ids", None)
@@ -446,17 +454,17 @@ def update_task(
             raise ValueError("Team does not belong to the selected project.")
 
     for field, value in updates.items():
-        setattr(task, field, value)
+        setattr(deliverable, field, value)
 
     db.flush()
     if dependency_ids is not None:
-        replace_dependencies(db, task, dependency_ids)
+        replace_dependencies(db, deliverable, dependency_ids)
     if contributor_ids is not None:
-        replace_contributor_teams(db, task, contributor_ids)
+        replace_contributor_teams(db, deliverable, contributor_ids)
 
     db.commit()
-    db.refresh(task)
-    return task
+    db.refresh(deliverable)
+    return deliverable
 
 
 def _parse_date(value: Optional[str]) -> Optional[date]:
@@ -478,7 +486,7 @@ def import_csv(db: Session, project_id: int, raw_bytes: bytes) -> schemas.CsvImp
     rows = list(reader)
     errors: List[str] = []
     created_teams = 0
-    imported_tasks = 0
+    imported_deliverables = 0
 
     team_map = {
         team.name: team
@@ -486,8 +494,8 @@ def import_csv(db: Session, project_id: int, raw_bytes: bytes) -> schemas.CsvImp
             select(models.Team).where(models.Team.project_id == project_id)
         ).all()
     }
-    pending_dependencies: List[Tuple[models.Task, List[str]]] = []
-    title_map: Dict[str, models.Task] = {}
+    pending_dependencies: List[Tuple[models.Deliverable, List[str]]] = []
+    title_map: Dict[str, models.Deliverable] = {}
 
     for index, row in enumerate(rows, start=2):
         title = (row.get("title") or "").strip()
@@ -506,7 +514,7 @@ def import_csv(db: Session, project_id: int, raw_bytes: bytes) -> schemas.CsvImp
             created_teams += 1
 
         try:
-            task = models.Task(
+            deliverable = models.Deliverable(
                 project_id=project_id,
                 title=title,
                 description=(row.get("description") or "").strip(),
@@ -522,38 +530,39 @@ def import_csv(db: Session, project_id: int, raw_bytes: bytes) -> schemas.CsvImp
             errors.append(f"Row {index}: {exc}")
             continue
 
-        if task.planned_start is None or task.planned_end is None:
+        if deliverable.planned_start is None or deliverable.planned_end is None:
             errors.append(f"Row {index}: planned_start and planned_end are required.")
             continue
 
-        db.add(task)
+        db.add(deliverable)
         db.flush()
-        title_map[task.title] = task
-        pending_dependencies.append((task, _parse_dependencies(row.get("dependencies"))))
-        imported_tasks += 1
+        title_map[deliverable.title] = deliverable
+        pending_dependencies.append((deliverable, _parse_dependencies(row.get("dependencies"))))
+        imported_deliverables += 1
 
-    for task, dependency_titles in pending_dependencies:
+    for deliverable, dependency_titles in pending_dependencies:
         dependency_ids: List[int] = []
         for dependency_title in dependency_titles:
-            dependency_task = title_map.get(dependency_title)
-            if dependency_task is None:
-                dependency_task = db.scalar(
-                    select(models.Task).where(
-                        models.Task.project_id == project_id,
-                        models.Task.title == dependency_title,
+            dependency_deliverable = title_map.get(dependency_title)
+            if dependency_deliverable is None:
+                dependency_deliverable = db.scalar(
+                    select(models.Deliverable).where(
+                        models.Deliverable.project_id == project_id,
+                        models.Deliverable.title == dependency_title,
                     )
                 )
-            if dependency_task is None:
+            if dependency_deliverable is None:
                 errors.append(
-                    f"Task '{task.title}' references unknown dependency '{dependency_title}'."
+                    f"Deliverable '{deliverable.title}' references unknown dependency "
+                    f"'{dependency_title}'."
                 )
                 continue
-            dependency_ids.append(dependency_task.id)
-        replace_dependencies(db, task, dependency_ids)
+            dependency_ids.append(dependency_deliverable.id)
+        replace_dependencies(db, deliverable, dependency_ids)
 
     db.commit()
     return schemas.CsvImportResult(
-        imported_tasks=imported_tasks,
+        imported_deliverables=imported_deliverables,
         created_teams=created_teams,
         errors=errors,
     )
@@ -568,17 +577,20 @@ def dashboard_payload(db: Session, project_id: int) -> schemas.DashboardData:
         schemas.TeamRead.model_validate(team)
         for team in list_teams(db, project_id)
     ]
-    serialized_tasks = [serialize_task(task) for task in list_tasks(db, project_id)]
+    serialized_deliverables = [
+        serialize_deliverable(deliverable)
+        for deliverable in list_deliverables(db, project_id)
+    ]
     summary = schemas.DashboardSummary(
-        total_tasks=len(serialized_tasks),
-        delayed_tasks=sum(1 for task in serialized_tasks if task.delayed),
-        at_risk_tasks=sum(1 for task in serialized_tasks if task.at_risk),
+        total_deliverables=len(serialized_deliverables),
+        delayed_deliverables=sum(1 for item in serialized_deliverables if item.delayed),
+        at_risk_deliverables=sum(1 for item in serialized_deliverables if item.at_risk),
         total_teams=len(teams),
     )
     return schemas.DashboardData(
         project=schemas.ProjectRead.model_validate(project),
         teams=teams,
-        tasks=serialized_tasks,
+        deliverables=serialized_deliverables,
         summary=summary,
     )
 
@@ -593,9 +605,9 @@ def project_cards(db: Session) -> List[schemas.ProjectCard]:
                 name=project.name,
                 description=project.description,
                 color=project.color,
-                total_tasks=payload.summary.total_tasks,
-                delayed_tasks=payload.summary.delayed_tasks,
-                at_risk_tasks=payload.summary.at_risk_tasks,
+                total_deliverables=payload.summary.total_deliverables,
+                delayed_deliverables=payload.summary.delayed_deliverables,
+                at_risk_deliverables=payload.summary.at_risk_deliverables,
                 total_teams=payload.summary.total_teams,
             )
         )

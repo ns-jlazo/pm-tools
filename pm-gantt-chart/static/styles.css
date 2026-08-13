@@ -662,7 +662,8 @@ th {
   position: absolute;
   top: 72px;
   left: clamp(8px, 16%, 250px);
-  width: min(360px, calc(100% - 16px));
+  /* Wider than the v2 popover: it now hosts the Jira story list too. */
+  width: min(440px, calc(100% - 16px));
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -946,7 +947,7 @@ th {
   font-size: 0.9rem;
 }
 
-/* Task-scoped chip strip */
+/* Deliverable-scoped chip strip */
 
 .jira-task-links {
   margin-top: 14px;
@@ -955,6 +956,18 @@ th {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Inside the Gantt inline popover, where vertical room is tight. */
+.jira-task-links.compact {
+  margin-top: 10px;
+  padding-top: 10px;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+
+.jira-task-links.compact .jira-chip-summary {
+  max-width: 150px;
 }
 
 .jira-task-header {
@@ -1048,6 +1061,194 @@ th {
   text-decoration: none;
   color: var(--accent);
   min-width: 90px;
+}
+
+/* ---------------- Jira story status filter ---------------- */
+
+.jira-status-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.jira-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(30, 41, 59, 0.18);
+  background: white;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* Deselected chips read as "hidden": muted, struck through. */
+.jira-status-chip:not(.selected) {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.jira-status-chip.selected {
+  border-color: rgba(15, 118, 110, 0.4);
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent);
+}
+
+.jira-status-chip.selected.done {
+  border-color: rgba(22, 101, 52, 0.4);
+  background: rgba(22, 101, 52, 0.12);
+  color: #166534;
+}
+
+.jira-status-chip.selected.indeterminate {
+  border-color: rgba(180, 83, 9, 0.4);
+  background: rgba(180, 83, 9, 0.12);
+  color: #b45309;
+}
+
+.jira-status-chip-count {
+  background: rgba(15, 23, 42, 0.1);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  padding: 1px 6px;
+}
+
+.jira-status-filter.compact {
+  margin: 0;
+  gap: 6px;
+}
+
+.jira-status-filter.compact .jira-status-chip {
+  padding: 3px 8px;
+  font-size: 0.72rem;
+}
+
+/* ---------------- Picker: stories from linked epics ---------------- */
+
+.jira-epic-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 48vh;
+  overflow-y: auto;
+}
+
+.jira-epic-picker-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.jira-epic-picker-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: sticky;
+  top: 0;
+  background: white;
+  padding: 4px 0;
+}
+
+/* ---------------- Gantt story overlay ---------------- */
+
+.gantt-jira-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px 10px;
+}
+
+.gantt-jira-toggle label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.gantt-story-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  font-size: 0.8rem;
+}
+
+.gantt-story {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+}
+
+.gantt-story-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gantt-story-toggle {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border-radius: 6px;
+  border: 1px solid rgba(30, 41, 59, 0.18);
+  background: white;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+
+/* The deliverable column is a fixed 280px, so summaries have to ellipsize. */
+.gantt-story-summary {
+  color: var(--muted);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gantt-story-links {
+  list-style: none;
+  margin: 2px 0 4px 24px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
+}
+
+.gantt-story-links li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gantt-story-links a {
+  font-weight: 700;
+  text-decoration: none;
+  color: var(--accent);
+}
+
+.gantt-story-relation {
+  color: var(--muted);
+  font-style: italic;
+  white-space: nowrap;
 }
 
 /* ---------------- Summary cards as nav buttons ---------------- */

@@ -1,6 +1,6 @@
 ---
 name: manage-jira
-description: Link Jira epics and stories to the pm-gantt-chart timeline. Use this skill whenever the user wants to connect Jira issues to a Gantt project, team, or task; refresh Jira status/dates; troubleshoot 401/403 errors from the Jira integration; or run JQL from the command line via `scripts/jira-search.py`.
+description: Link Jira epics and stories to the pm-gantt-chart timeline. Use this skill whenever the user wants to connect Jira issues to a Gantt project, team, or project deliverable; refresh Jira status/dates; troubleshoot 401/403 errors from the Jira integration; or run JQL from the command line via `scripts/jira-search.py`.
 ---
 
 # manage-jira — Jira integration workflow
@@ -72,7 +72,7 @@ In the UI:
 2. Scroll to the **Jira epics** panel.
 3. Click **Link epic**.
 4. Choose a team (optional) so the epic is grouped under that team's row.
-5. Either search with a keyword / JQL, or paste an epic key on the "Paste key" tab.
+5. Either search with a keyword / JQL, or paste an epic key on the "Search by Jira Ticket ID" tab.
 6. Click **Link** on the row.
 
 Programmatic equivalent:
@@ -83,16 +83,25 @@ curl -sX POST http://localhost:8001/api/projects/1/jira/links \
   -d '{"jira_key": "ABC-123", "team_id": 4}'
 ```
 
-## Step 4 — Link stories to individual tasks
+## Step 4 — Link stories to individual project deliverables
 
-1. Open the **Update task** panel and pick a task.
-2. Under the form, click **Link issue** in the Jira-issues section.
-3. Search or paste-key exactly like the epic flow.
+Three surfaces do the same thing; pick whichever is closest to hand:
+
+- **Update deliverable** panel — pick a deliverable, then click **Link story** in
+  the Jira-stories section.
+- **Create deliverable** panel — **Pick Jira story** queues keys that are linked
+  automatically once the deliverable is saved.
+- **Timeline** — click a deliverable bar and use the **Jira stories** section in
+  the quick-edit popover.
+
+In every picker, the **From linked epics** tab lists the stories under the
+project's linked epics (honoring the status filter and marking keys already
+linked); **Search** and **Search by Jira Ticket ID** work as before.
 
 Programmatic:
 
 ```bash
-curl -sX POST http://localhost:8001/api/tasks/17/jira/links \
+curl -sX POST http://localhost:8001/api/deliverables/17/jira/links \
   -H 'content-type: application/json' \
   -d '{"jira_key": "ABC-456"}'
 ```
@@ -105,9 +114,22 @@ curl -sX POST http://localhost:8001/api/tasks/17/jira/links \
 
 ## Step 6 — See stories under a linked epic
 
-Every linked epic exposes a **Show stories** toggle in the panel. It calls `/api/jira/issues/{EPIC-KEY}/children` and lists stories with status pills. Nothing is written back — this is a read-only sidebar. To connect a story to a Gantt task, use Step 4 with the story's key.
+Every linked epic exposes a **Show stories** toggle in the panel. It calls `/api/jira/issues/{EPIC-KEY}/children` and lists stories with status pills. Nothing is written back — this is a read-only sidebar. To connect a story to a deliverable, use Step 4 with the story's key.
 
-## Step 7 — Troubleshooting
+Stories in Jira's `done` category (Closed, Done, Resolved) are hidden by default.
+The **Story status** chip row toggles each status; the choice is remembered per
+project in `localStorage`.
+
+## Step 7 — See linked stories on the timeline
+
+Tick **Show Jira stories** in the timeline toolbar. Each deliverable row then
+lists its linked stories, and expanding a story (`+`) shows that story's Jira
+relationships — blocks / is blocked by / relates to / parent / subtasks. The
+whole overlay is one request, `GET /api/projects/{id}/jira/deliverable-links`,
+served from cached issue data, and nothing is fetched while the toggle is off.
+The toggle state persists per project.
+
+## Step 8 — Troubleshooting
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |

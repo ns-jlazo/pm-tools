@@ -91,6 +91,83 @@ def _to_search_result(raw: Dict[str, Any], server_url: str) -> schemas.JiraSearc
     )
 
 
+def _server_base(browse_url: str) -> str:
+    """Recover the Jira server root from a stored `.../browse/KEY` URL."""
+    return (browse_url or "").split("/browse/")[0]
+
+
+def _link_ref(
+    relation: str, raw_issue: Dict[str, Any], server_url: str
+) -> Optional[schemas.JiraIssueLinkRef]:
+    """Build one link ref from the partial issue Jira embeds in a relationship."""
+    key = raw_issue.get("key") or ""
+    if not key:
+        return None
+    fields = raw_issue.get("fields") or {}
+    status = fields.get("status") or {}
+    return schemas.JiraIssueLinkRef(
+        relation=relation,
+        key=key,
+        url=f"{server_url.rstrip('/')}/browse/{key}",
+        summary=fields.get("summary") or "",
+        status=status.get("name") or "",
+        status_category=(status.get("statusCategory") or {}).get("key", ""),
+        issue_type=(fields.get("issuetype") or {}).get("name") or "",
+    )
+
+
+def _parse_issue_links(raw_json: str, server_url: str) -> List[schemas.JiraIssueLinkRef]:
+    """Extract a story's Jira relationships from the cached `raw_json`.
+
+    `JiraClient.search_issues` asks for `issuelinks` alongside `*navigable`, so
+    the blocks / is blocked by / relates to graph is already on disk — the Gantt
+    overlay needs no extra Jira calls. Malformed or partial payloads yield [].
+    """
+    if not raw_json:
+        return []
+    try:
+        raw = json.loads(raw_json)
+    except (TypeError, ValueError):
+        return []
+    fields = (raw or {}).get("fields") or {}
+
+    refs: List[schemas.JiraIssueLinkRef] = []
+    for item in fields.get("issuelinks") or []:
+        if not isinstance(item, dict):
+            continue
+        link_type = item.get("type") or {}
+        if item.get("inwardIssue"):
+            # `inward` reads from this issue's perspective, e.g. "is blocked by".
+            ref = _link_ref(
+                link_type.get("inward") or "relates to", item["inwardIssue"], server_url
+            )
+        elif item.get("outwardIssue"):
+            ref = _link_ref(
+                link_type.get("outward") or "relates to",
+                item["outwardIssue"],
+                server_url,
+            )
+        else:
+            ref = None
+        if ref is not None:
+            refs.append(ref)
+
+    parent = fields.get("parent") or {}
+    if parent:
+        ref = _link_ref("parent", parent, server_url)
+        if ref is not None:
+            refs.append(ref)
+
+    for subtask in fields.get("subtasks") or []:
+        if not isinstance(subtask, dict):
+            continue
+        ref = _link_ref("subtask", subtask, server_url)
+        if ref is not None:
+            refs.append(ref)
+
+    return refs
+
+
 def _issue_to_read(issue: models.JiraIssue) -> schemas.JiraIssueRead:
     return schemas.JiraIssueRead(
         id=issue.id,
@@ -105,6 +182,7 @@ def _issue_to_read(issue: models.JiraIssue) -> schemas.JiraIssueRead:
         parent_key=issue.parent_key,
         due_date=issue.due_date,
         synced_at=issue.synced_at,
+        links=_parse_issue_links(issue.raw_json, _server_base(issue.jira_url)),
     )
 
 
@@ -371,17 +449,17 @@ def force_sync_project(db: Session, project_id: int) -> schemas.ProjectJiraLinks
     return list_project_links(db, project_id, refresh_stale=False)
 
 
-# ------------------------------------------------------------------ task links
+# ----------------------------------------------------------- deliverable links
 
 
-def list_task_links(
-    db: Session, task_id: int, refresh_stale: bool = True
-) -> List[schemas.TaskJiraLinkRead]:
-    task = db.get(models.Task, task_id)
-    if task is None:
-        raise ValueError("Task not found.")
+def list_deliverable_links(
+    db: Session, deliverable_id: int, refresh_stale: bool = True
+) -> List[schemas.DeliverableJiraLinkRead]:
+    deliverable = db.get(models.Deliverable, deliverable_id)
+    if deliverable is None:
+        raise ValueError("Deliverable not found.")
 
-    links = _load_task_links(db, task_id)
+    links = _load_deliverable_links(db, deliverable_id)
     issues = [link.issue for link in links]
     if issues and refresh_stale and _link_stale(issues):
         try:
@@ -389,38 +467,38 @@ def list_task_links(
         except JiraNotConfigured:
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Stale refresh for task %s failed: %s", task_id, exc)
+            logger.warning("Stale refresh for deliverable %s failed: %s", deliverable_id, exc)
         else:
-            links = _load_task_links(db, task_id)
+            links = _load_deliverable_links(db, deliverable_id)
 
-    return [_task_link_read(link) for link in links]
+    return [_deliverable_link_read(link) for link in links]
 
 
-def _load_task_links(db: Session, task_id: int) -> List[models.TaskJiraLink]:
+def _load_deliverable_links(db: Session, deliverable_id: int) -> List[models.DeliverableJiraLink]:
     stmt = (
-        select(models.TaskJiraLink)
-        .where(models.TaskJiraLink.task_id == task_id)
-        .options(selectinload(models.TaskJiraLink.issue))
-        .order_by(models.TaskJiraLink.id)
+        select(models.DeliverableJiraLink)
+        .where(models.DeliverableJiraLink.deliverable_id == deliverable_id)
+        .options(selectinload(models.DeliverableJiraLink.issue))
+        .order_by(models.DeliverableJiraLink.id)
     )
     return list(db.scalars(stmt))
 
 
-def _task_link_read(link: models.TaskJiraLink) -> schemas.TaskJiraLinkRead:
-    return schemas.TaskJiraLinkRead(
+def _deliverable_link_read(link: models.DeliverableJiraLink) -> schemas.DeliverableJiraLinkRead:
+    return schemas.DeliverableJiraLinkRead(
         id=link.id,
-        task_id=link.task_id,
+        deliverable_id=link.deliverable_id,
         linked_at=link.linked_at,
         issue=_issue_to_read(link.issue),
     )
 
 
-def link_issue_to_task(
-    db: Session, task_id: int, payload: schemas.JiraLinkCreate
-) -> schemas.TaskJiraLinkRead:
-    task = db.get(models.Task, task_id)
-    if task is None:
-        raise ValueError("Task not found.")
+def link_issue_to_deliverable(
+    db: Session, deliverable_id: int, payload: schemas.JiraLinkCreate
+) -> schemas.DeliverableJiraLinkRead:
+    deliverable = db.get(models.Deliverable, deliverable_id)
+    if deliverable is None:
+        raise ValueError("Deliverable not found.")
 
     fetched = sync_keys(db, [payload.jira_key])
     issue = fetched.get(payload.jira_key.upper()) or fetched.get(payload.jira_key)
@@ -428,28 +506,87 @@ def link_issue_to_task(
         raise ValueError(f"Jira issue {payload.jira_key} was not found.")
 
     existing = db.scalar(
-        select(models.TaskJiraLink).where(
-            models.TaskJiraLink.task_id == task_id,
-            models.TaskJiraLink.jira_issue_id == issue.id,
+        select(models.DeliverableJiraLink).where(
+            models.DeliverableJiraLink.deliverable_id == deliverable_id,
+            models.DeliverableJiraLink.jira_issue_id == issue.id,
         )
     )
     if existing is not None:
-        return _task_link_read(existing)
+        return _deliverable_link_read(existing)
 
-    link = models.TaskJiraLink(
-        task_id=task_id,
+    link = models.DeliverableJiraLink(
+        deliverable_id=deliverable_id,
         jira_issue_id=issue.id,
         linked_at=datetime.utcnow(),
     )
     db.add(link)
     db.commit()
     db.refresh(link)
-    return _task_link_read(link)
+    return _deliverable_link_read(link)
 
 
-def unlink_task_link(db: Session, task_id: int, link_id: int) -> None:
-    link = db.get(models.TaskJiraLink, link_id)
-    if link is None or link.task_id != task_id:
+def _load_project_deliverable_links(
+    db: Session, project_id: int
+) -> List[models.DeliverableJiraLink]:
+    stmt = (
+        select(models.DeliverableJiraLink)
+        .join(
+            models.Deliverable,
+            models.Deliverable.id == models.DeliverableJiraLink.deliverable_id,
+        )
+        .where(models.Deliverable.project_id == project_id)
+        .options(selectinload(models.DeliverableJiraLink.issue))
+        .order_by(models.DeliverableJiraLink.deliverable_id, models.DeliverableJiraLink.id)
+    )
+    return list(db.scalars(stmt))
+
+
+def list_project_deliverable_links(
+    db: Session, project_id: int, refresh_stale: bool = True
+) -> schemas.ProjectDeliverableJiraLinks:
+    """Every deliverable's Jira links for one project, in a single round trip.
+
+    The Gantt story overlay would otherwise need one request per row.
+    """
+    project = db.get(models.Project, project_id)
+    if project is None:
+        raise ValueError("Project not found.")
+
+    links = _load_project_deliverable_links(db, project_id)
+    issues = [link.issue for link in links]
+    stale = _link_stale(issues) if issues else False
+    if stale and refresh_stale:
+        try:
+            sync_keys(db, [issue.jira_key for issue in issues])
+        except JiraNotConfigured:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Stale refresh is best-effort; surface data we already have.
+            logger.warning(
+                "Stale refresh for project %s deliverable links failed: %s",
+                project_id,
+                exc,
+            )
+        else:
+            links = _load_project_deliverable_links(db, project_id)
+            issues = [link.issue for link in links]
+            stale = False
+
+    grouped: Dict[int, List[schemas.DeliverableJiraLinkRead]] = {}
+    for link in links:
+        grouped.setdefault(link.deliverable_id, []).append(_deliverable_link_read(link))
+
+    return schemas.ProjectDeliverableJiraLinks(
+        project_id=project_id,
+        links_by_deliverable=grouped,
+        stale=stale,
+        synced_at=_latest_sync(issues),
+    )
+
+
+def unlink_deliverable_link(db: Session, deliverable_id: int, link_id: int) -> None:
+    link = db.get(models.DeliverableJiraLink, link_id)
+    if link is None or link.deliverable_id != deliverable_id:
         raise ValueError("Link not found.")
     db.delete(link)
     db.commit()
