@@ -107,6 +107,31 @@ function jiraStatusClass(category) {
   return "jira-status-pill todo";
 }
 
+// Work that has started. Jira's `indeterminate` category is the primary signal
+// — a workflow puts In Progress, Blocked, Scoping and Waiting for Customer
+// there — and the name list catches a workflow that files one of those under
+// To Do instead.
+const IN_PROGRESS_STATUS_NAMES = new Set([
+  "in progress",
+  "blocked",
+  "scoping",
+  "waiting for customer",
+]);
+
+function isInProgressIssue(issue) {
+  if (!issue) return false;
+  if ((issue.status_category || "").toLowerCase() === "indeterminate") return true;
+  return IN_PROGRESS_STATUS_NAMES.has((issue.status || "").trim().toLowerCase());
+}
+
+// Share of stories that are underway, for seeding a deliverable's progress from
+// a Jira label search. Counts every story found, whatever its status.
+function progressFromIssues(issues) {
+  const all = issues || [];
+  if (!all.length) return null;
+  return Math.round((all.filter(isInProgressIssue).length / all.length) * 100);
+}
+
 function readStored(key, fallback) {
   try {
     const raw = window.localStorage.getItem(key);
@@ -334,6 +359,10 @@ function JiraPickerModal({
   const labelVisible = statusFilter ? statusFilter.apply(labelIssues) : labelIssues;
   const labelHidden = labelIssues.length - labelVisible.length;
   const labelToLink = labelVisible.filter((issue) => !alreadyLinked.has(issue.key));
+  // Derived from every story the label returned, so toggling the status filter
+  // does not move the number the deliverable's progress is seeded with.
+  const labelInProgress = labelIssues.filter(isInProgressIssue).length;
+  const labelProgress = progressFromIssues(labelIssues);
 
   const loadEpicStories = async () => {
     setLoadingEpics(true);
@@ -611,7 +640,7 @@ function JiraPickerModal({
                           className="button-primary"
                           type="button"
                           disabled=${submitting}
-                          onClick=${() => onLinkMany(labelToLink.map((issue) => issue.key))}
+                          onClick=${() => onLinkMany(labelToLink.map((issue) => issue.key), labelProgress)}
                         >
                           Link ${labelToLink.length} ${labelToLink.length === 1 ? "story" : "stories"}
                         </button>
@@ -634,6 +663,11 @@ function JiraPickerModal({
                       ${labelVisible.length && !labelToLink.length
                         ? html`<span> · all already linked</span>`
                         : null}
+                      ${labelProgress === null
+                        ? null
+                        : html`<span>
+                            ${" "}· ${labelInProgress} in progress → seeds ${labelProgress}% progress
+                          </span>`}
                     </div>
                     <div className="jira-results">
                       ${labelVisible.map((issue) => {
@@ -869,9 +903,19 @@ function JiraProjectPanel({ projectId, teams, onMessage, statusFilter, onEpicsLo
   const [pickerError, setPickerError] = useState("");
   const [trouble, setTrouble] = useState("");
 
+  // The epic -> team assignment made here is also what buckets a deliverable's
+  // stories by team on the timeline, so publish it alongside the keys.
   const publishEpicKeys = (payload) => {
     if (typeof onEpicsLoaded !== "function") return;
-    onEpicsLoaded(((payload && payload.links) || []).map((link) => link.issue.key));
+    const links = (payload && payload.links) || [];
+    const teamsByEpic = {};
+    for (const link of links) {
+      teamsByEpic[link.issue.key] = link.team_id ?? null;
+    }
+    onEpicsLoaded(
+      links.map((link) => link.issue.key),
+      teamsByEpic
+    );
   };
 
   const load = async () => {
@@ -1036,12 +1080,47 @@ function JiraProjectPanel({ projectId, teams, onMessage, statusFilter, onEpicsLo
   `;
 }
 
+// Bucket a deliverable's linked stories by the team that owns their parent epic
+// in the project's Jira panel ("Link Teams to Jira Work Items"). `epicTeams`
+// maps an epic key to a team id. Bucket order follows `teams` so the buckets
+// read the same wherever they are rendered; stories whose epic is unlinked, has
+// no team, or does not exist land in one trailing group with `team: null`.
+function groupStoriesByTeam(links, teams, epicTeams) {
+  const teamsById = new Map((teams || []).map((team) => [team.id, team]));
+  const buckets = new Map();
+  const unassigned = [];
+  for (const link of links || []) {
+    const parentKey = link.issue && link.issue.parent_key;
+    const teamId = parentKey && epicTeams ? epicTeams[parentKey] : null;
+    const team = teamId === null || teamId === undefined ? null : teamsById.get(teamId);
+    if (!team) {
+      unassigned.push(link);
+      continue;
+    }
+    if (!buckets.has(team.id)) buckets.set(team.id, { team, links: [] });
+    buckets.get(team.id).links.push(link);
+  }
+  const groups = (teams || [])
+    .filter((team) => buckets.has(team.id))
+    .map((team) => buckets.get(team.id));
+  if (unassigned.length) groups.push({ team: null, links: unassigned });
+  return groups;
+}
+
+// Nothing is mapped to a team, so headings would add noise instead of grouping.
+function isFlatGrouping(groups) {
+  return groups.length <= 1 && (!groups.length || groups[0].team === null);
+}
+
 function JiraDeliverableLinks({
   deliverableId,
   onMessage,
   epicKeys,
   statusFilter,
   onLinked,
+  onProgressSuggested,
+  teams,
+  epicTeams,
   compact,
 }) {
   const [links, setLinks] = useState([]);
@@ -1092,8 +1171,10 @@ function JiraDeliverableLinks({
     }
   };
 
-  // One request for a whole label's worth of stories.
-  const linkMany = async (keys) => {
+  // One request for a whole label's worth of stories. `progress` is the share of
+  // those stories that are underway, offered as a starting value for the
+  // deliverable's editable progress field.
+  const linkMany = async (keys, progress) => {
     setSubmitting(true);
     setPickerError("");
     try {
@@ -1105,6 +1186,10 @@ function JiraDeliverableLinks({
       const parts = [`Linked ${result.linked.length} story(s) to deliverable.`];
       if (result.skipped.length) parts.push(`${result.skipped.length} already linked.`);
       if (result.not_found.length) parts.push(`Not found: ${result.not_found.join(", ")}.`);
+      if (progress !== null && progress !== undefined && typeof onProgressSuggested === "function") {
+        onProgressSuggested(progress);
+        parts.push(`Progress prefilled at ${progress}% — save to apply.`);
+      }
       onMessage(parts.join(" "), result.not_found.length ? "error" : "success");
       await load();
       notifyLinked();
@@ -1129,6 +1214,28 @@ function JiraDeliverableLinks({
     }
   };
 
+  const groups = groupStoriesByTeam(links, teams, epicTeams);
+  const flat = isFlatGrouping(groups);
+  const chipRow = (group) => html`
+    <div className="jira-chip-row">
+      ${group.links.map(
+        (link) => html`
+          <div className="jira-chip" key=${link.id}>
+            <a href=${link.issue.url} target="_blank" rel="noreferrer">${link.issue.key}</a>
+            <span className=${jiraStatusClass(link.issue.status_category)}>${link.issue.status}</span>
+            <span className="jira-chip-summary">${link.issue.summary}</span>
+            <button
+              type="button"
+              className="jira-chip-remove"
+              onClick=${() => unlink(link)}
+              aria-label=${`Unlink ${link.issue.key}`}
+            >×</button>
+          </div>
+        `
+      )}
+    </div>
+  `;
+
   return html`
     <div className=${`jira-task-links ${compact ? "compact" : ""}`}>
       <div className="jira-task-header">
@@ -1140,25 +1247,27 @@ function JiraDeliverableLinks({
       ${loading && !links.length
         ? html`<div className="help-text">Loading…</div>`
         : links.length
-          ? html`
-              <div className="jira-chip-row">
-                ${links.map(
-                  (link) => html`
-                    <div className="jira-chip" key=${link.id}>
-                      <a href=${link.issue.url} target="_blank" rel="noreferrer">${link.issue.key}</a>
-                      <span className=${jiraStatusClass(link.issue.status_category)}>${link.issue.status}</span>
-                      <span className="jira-chip-summary">${link.issue.summary}</span>
-                      <button
-                        type="button"
-                        className="jira-chip-remove"
-                        onClick=${() => unlink(link)}
-                        aria-label=${`Unlink ${link.issue.key}`}
-                      >×</button>
+          ? flat
+            ? chipRow(groups[0])
+            : groups.map(
+                (group) => html`
+                  <div
+                    className="jira-team-bucket"
+                    key=${group.team ? group.team.id : "unassigned"}
+                  >
+                    <div className="jira-team-bucket-heading">
+                      ${group.team
+                        ? html`
+                            <span className="team-dot" style=${{ background: group.team.color }}></span>
+                            <strong>${group.team.name}</strong>
+                          `
+                        : html`<strong>Unassigned</strong>`}
+                      <span className="tiny-pill">${group.links.length}</span>
                     </div>
-                  `
-                )}
-              </div>
-            `
+                    ${chipRow(group)}
+                  </div>
+                `
+              )
           : html`<div className="help-text">No Jira stories linked to this deliverable yet.</div>`}
       ${showPicker
         ? html`
@@ -1425,14 +1534,18 @@ function DeliverableForm({
     setForm({ ...form, jira_keys: [...pendingKeys, key] });
     setShowPicker(false);
   };
-  // Label search hands over every matching key at once; they are linked after save.
-  const appendPendingJiraKeys = (keys) => {
+  // Label search hands over every matching key at once; they are linked after
+  // save. It also reports how many of those stories are underway, which seeds
+  // the still-editable progress field.
+  const appendPendingJiraKeys = (keys, progress) => {
     const next = [...pendingKeys];
     for (const raw of keys || []) {
       const key = (raw || "").trim().toUpperCase();
       if (key && !next.includes(key)) next.push(key);
     }
-    setForm({ ...form, jira_keys: next });
+    const seeded =
+      progress === null || progress === undefined ? {} : { progress };
+    setForm({ ...form, jira_keys: next, ...seeded });
     setShowPicker(false);
   };
   const removePendingJira = (key) => {
@@ -1617,6 +1730,8 @@ function InlineEditPopover({
   epicKeys,
   statusFilter,
   onLinksChanged,
+  teams,
+  epicTeams,
 }) {
   const handleField = (key) => (event) => setForm({ ...form, [key]: event.target.value });
   // A plain div, not a form: the story picker it now hosts renders its own
@@ -1660,13 +1775,17 @@ function InlineEditPopover({
         epicKeys=${epicKeys}
         statusFilter=${statusFilter}
         onLinked=${onLinksChanged}
+        onProgressSuggested=${(value) =>
+          setForm((current) => ({ ...current, progress: value }))}
+        teams=${teams}
+        epicTeams=${epicTeams}
         compact=${true}
       />
     </div>
   `;
 }
 
-function GanttStoryList({ links, statusFilter }) {
+function GanttStoryList({ links, statusFilter, teams, epicTeams }) {
   const [expanded, setExpanded] = useState({});
   const visible = statusFilter
     ? links.filter((link) => statusFilter.isVisible(link.issue))
@@ -1682,54 +1801,79 @@ function GanttStoryList({ links, statusFilter }) {
     </div>`;
   }
 
+  const groups = groupStoriesByTeam(visible, teams, epicTeams);
+  const flat = isFlatGrouping(groups);
+
+  const story = (link) => {
+    const issue = link.issue;
+    const open = Boolean(expanded[issue.key]);
+    const related = issue.links || [];
+    return html`
+      <div className="gantt-story" key=${link.id}>
+        <div className="gantt-story-main">
+          <button
+            type="button"
+            className="gantt-story-toggle"
+            aria-expanded=${open}
+            onClick=${() => toggle(issue.key)}
+            title=${related.length ? "Show Jira relationships" : "No Jira relationships"}
+          >${open ? "−" : "+"}</button>
+          <a href=${issue.url} target="_blank" rel="noreferrer" className="jira-result-key">
+            ${issue.key}
+          </a>
+          <span className=${jiraStatusClass(issue.status_category)}>${issue.status}</span>
+          <span className="gantt-story-summary">${issue.summary}</span>
+        </div>
+        ${open
+          ? related.length
+            ? html`
+                <ul className="gantt-story-links">
+                  ${related.map(
+                    (ref) => html`
+                      <li key=${`${ref.relation}-${ref.key}`}>
+                        <span className="gantt-story-relation">${ref.relation}</span>
+                        <a href=${ref.url} target="_blank" rel="noreferrer">${ref.key}</a>
+                        ${ref.status
+                          ? html`<span className=${jiraStatusClass(ref.status_category)}>
+                              ${ref.status}
+                            </span>`
+                          : null}
+                        <span className="gantt-story-summary">${ref.summary}</span>
+                      </li>
+                    `
+                  )}
+                </ul>
+              `
+            : html`<div className="help-text">No linked issues or subtasks in Jira.</div>`
+          : null}
+      </div>
+    `;
+  };
+
   return html`
     <div className="gantt-story-list">
       <span className="tiny-pill">Jira ${visible.length}</span>
-      ${visible.map((link) => {
-        const issue = link.issue;
-        const open = Boolean(expanded[issue.key]);
-        const related = issue.links || [];
-        return html`
-          <div className="gantt-story" key=${link.id}>
-            <div className="gantt-story-main">
-              <button
-                type="button"
-                className="gantt-story-toggle"
-                aria-expanded=${open}
-                onClick=${() => toggle(issue.key)}
-                title=${related.length ? "Show Jira relationships" : "No Jira relationships"}
-              >${open ? "−" : "+"}</button>
-              <a href=${issue.url} target="_blank" rel="noreferrer" className="jira-result-key">
-                ${issue.key}
-              </a>
-              <span className=${jiraStatusClass(issue.status_category)}>${issue.status}</span>
-              <span className="gantt-story-summary">${issue.summary}</span>
-            </div>
-            ${open
-              ? related.length
-                ? html`
-                    <ul className="gantt-story-links">
-                      ${related.map(
-                        (ref) => html`
-                          <li key=${`${ref.relation}-${ref.key}`}>
-                            <span className="gantt-story-relation">${ref.relation}</span>
-                            <a href=${ref.url} target="_blank" rel="noreferrer">${ref.key}</a>
-                            ${ref.status
-                              ? html`<span className=${jiraStatusClass(ref.status_category)}>
-                                  ${ref.status}
-                                </span>`
-                              : null}
-                            <span className="gantt-story-summary">${ref.summary}</span>
-                          </li>
-                        `
-                      )}
-                    </ul>
-                  `
-                : html`<div className="help-text">No linked issues or subtasks in Jira.</div>`
-              : null}
-          </div>
-        `;
-      })}
+      ${flat
+        ? (groups[0] ? groups[0].links : []).map(story)
+        : groups.map(
+            (group) => html`
+              <div
+                className="jira-team-bucket"
+                key=${group.team ? group.team.id : "unassigned"}
+              >
+                <div className="jira-team-bucket-heading">
+                  ${group.team
+                    ? html`
+                        <span className="team-dot" style=${{ background: group.team.color }}></span>
+                        <strong>${group.team.name}</strong>
+                      `
+                    : html`<strong>Unassigned</strong>`}
+                  <span className="tiny-pill">${group.links.length}</span>
+                </div>
+                ${group.links.map(story)}
+              </div>
+            `
+          )}
       ${hidden ? html`<span className="help-text">${hidden} hidden by the status filter.</span>` : null}
     </div>
   `;
@@ -1745,6 +1889,8 @@ function GanttRow({
   stories,
   showStories,
   statusFilter,
+  teams,
+  epicTeams,
 }) {
   const start = startOfDay(deliverable.current_start || deliverable.planned_start);
   const end = startOfDay(deliverable.current_end || deliverable.planned_end);
@@ -1770,7 +1916,12 @@ function GanttRow({
           ${deliverable.at_risk ? html`<span className="tiny-pill">Risk: ${deliverable.risk_level}</span>` : null}
         </div>
         ${showStories
-          ? html`<${GanttStoryList} links=${stories || []} statusFilter=${statusFilter} />`
+          ? html`<${GanttStoryList}
+              links=${stories || []}
+              statusFilter=${statusFilter}
+              teams=${teams}
+              epicTeams=${epicTeams}
+            />`
           : null}
       </div>
       <div className="timeline-grid" style=${{ "--days": timeline.days.length }}>
@@ -1798,6 +1949,8 @@ function GanttRow({
                 epicKeys=${inlineControls.epicKeys}
                 statusFilter=${statusFilter}
                 onLinksChanged=${inlineControls.onLinksChanged}
+                teams=${teams}
+                epicTeams=${epicTeams}
               />
             `
           : null}
@@ -1814,6 +1967,7 @@ function GanttChart({
   submitting,
   statusFilter,
   epicKeys,
+  epicTeams,
   onMessage,
 }) {
   const barRefs = useRef({});
@@ -2037,6 +2191,8 @@ function GanttChart({
                           stories=${linksFor(deliverable.id)}
                           showStories=${showStories}
                           statusFilter=${statusFilter}
+                          teams=${teams}
+                          epicTeams=${epicTeams}
                           inlineControls=${{
                             form: inlineForm,
                             setForm: setInlineForm,
@@ -2388,6 +2544,15 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
 }
 
 function DeliverableTable({ deliverables }) {
+  // The `+N` pill expands the contributing teams in place; a title attribute
+  // hid them behind a hover-only tooltip.
+  const [openContributors, setOpenContributors] = useState({});
+  const toggleContributors = (deliverableId) =>
+    setOpenContributors((current) => ({
+      ...current,
+      [deliverableId]: !current[deliverableId],
+    }));
+
   return html`
     <section className="table-shell" id="risk-register">
       <h2>Risk register</h2>
@@ -2406,6 +2571,7 @@ function DeliverableTable({ deliverables }) {
           ${deliverables.map(
             (deliverable) => {
               const contributors = deliverable.contributor_teams || [];
+              const showContributors = Boolean(openContributors[deliverable.id]);
               return html`
                 <tr key=${deliverable.id}>
                   <td>
@@ -2415,10 +2581,27 @@ function DeliverableTable({ deliverables }) {
                   <td>
                     ${deliverable.team_name}
                     ${contributors.length
-                      ? html`<span
+                      ? html`<button
+                          type="button"
                           className="team-plus-pill"
-                          title=${`Contributors: ${contributors.map((c) => c.name).join(", ")}`}
-                        >+${contributors.length}</span>`
+                          aria-expanded=${showContributors}
+                          title=${showContributors ? "Hide contributing teams" : "Show contributing teams"}
+                          onClick=${() => toggleContributors(deliverable.id)}
+                        >+${contributors.length}</button>`
+                      : null}
+                    ${contributors.length && showContributors
+                      ? html`
+                          <div className="team-contrib-list">
+                            ${contributors.map(
+                              (team) => html`
+                                <div className="team-contrib-row" key=${team.id}>
+                                  <span className="team-dot" style=${{ background: team.color }}></span>
+                                  ${team.name}
+                                </div>
+                              `
+                            )}
+                          </div>
+                        `
                       : null}
                   </td>
                   <td>${humanizeStatus(deliverable.status)}</td>
@@ -2463,8 +2646,10 @@ function WorkspaceView({
   const [teamDrawerOpen, setTeamDrawerOpen] = useState(false);
   const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
   // Epic keys come from the Jira panel's load; the pickers use them for the
-  // "From linked epics" tab.
+  // "From linked epics" tab. The same load reports which team each epic belongs
+  // to, which is how a deliverable's stories get bucketed by team.
   const [epicKeys, setEpicKeys] = useState([]);
+  const [epicTeams, setEpicTeams] = useState({});
   const statusFilter = useJiraStatusFilter(dashboard.project.id);
 
   return html`
@@ -2528,6 +2713,7 @@ function WorkspaceView({
           submitting=${submitting}
           statusFilter=${statusFilter}
           epicKeys=${epicKeys}
+          epicTeams=${epicTeams}
           onMessage=${onNotify}
         />
         <${DeliverableTable} deliverables=${deliverables} />
@@ -2538,7 +2724,10 @@ function WorkspaceView({
         teams=${teams}
         onMessage=${onNotify}
         statusFilter=${statusFilter}
-        onEpicsLoaded=${setEpicKeys}
+        onEpicsLoaded=${(keys, teamsByEpic) => {
+          setEpicKeys(keys);
+          setEpicTeams(teamsByEpic);
+        }}
       />
 
       <section className="workspace-panels">
@@ -2597,6 +2786,10 @@ function WorkspaceView({
                   onMessage=${onNotify}
                   epicKeys=${epicKeys}
                   statusFilter=${statusFilter}
+                  onProgressSuggested=${(value) =>
+                    setEditForm((current) => ({ ...current, progress: value }))}
+                  teams=${teams}
+                  epicTeams=${epicTeams}
                 />
               `
             : html`<div className="empty-state">Add a deliverable first to start tracking updates.</div>`}
