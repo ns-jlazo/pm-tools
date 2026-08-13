@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from datetime import date, datetime
 
@@ -28,9 +28,9 @@ class ProjectCard(BaseModel):
     name: str
     description: str
     color: str
-    total_tasks: int
-    delayed_tasks: int
-    at_risk_tasks: int
+    total_deliverables: int
+    delayed_deliverables: int
+    at_risk_deliverables: int
     total_teams: int
 
 
@@ -52,7 +52,7 @@ class TeamRead(TeamCreate):
 
 
 class TeamRef(BaseModel):
-    """Minimal team payload embedded in TaskRead for contributor rendering."""
+    """Minimal team payload embedded in DeliverableRead for contributor rendering."""
 
     id: int
     name: str
@@ -61,7 +61,7 @@ class TeamRef(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class TaskBase(BaseModel):
+class DeliverableBase(BaseModel):
     project_id: Optional[int] = None
     title: str = Field(min_length=1, max_length=200)
     description: str = ""
@@ -76,11 +76,11 @@ class TaskBase(BaseModel):
     contributor_team_ids: List[int] = Field(default_factory=list)
 
 
-class TaskCreate(TaskBase):
+class DeliverableCreate(DeliverableBase):
     jira_keys: List[str] = Field(default_factory=list)
 
 
-class TaskUpdate(BaseModel):
+class DeliverableUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = None
     team_id: Optional[int] = None
@@ -94,7 +94,7 @@ class TaskUpdate(BaseModel):
     contributor_team_ids: Optional[List[int]] = None
 
 
-class TaskRead(BaseModel):
+class DeliverableRead(BaseModel):
     id: int
     project_id: int
     title: str
@@ -120,21 +120,21 @@ class TaskRead(BaseModel):
 
 
 class DashboardSummary(BaseModel):
-    total_tasks: int
-    delayed_tasks: int
-    at_risk_tasks: int
+    total_deliverables: int
+    delayed_deliverables: int
+    at_risk_deliverables: int
     total_teams: int
 
 
 class DashboardData(BaseModel):
     project: ProjectRead
     teams: List[TeamRead]
-    tasks: List[TaskRead]
+    deliverables: List[DeliverableRead]
     summary: DashboardSummary
 
 
 class CsvImportResult(BaseModel):
-    imported_tasks: int
+    imported_deliverables: int
     created_teams: int
     errors: List[str]
 
@@ -161,9 +161,22 @@ class JiraSearchResponse(BaseModel):
     is_last: bool = True
 
 
+class JiraIssueLinkRef(BaseModel):
+    """One Jira-side relationship of a linked story (issue link, subtask, parent)."""
+
+    relation: str
+    key: str
+    url: str
+    summary: str = ""
+    status: str = ""
+    status_category: str = ""
+    issue_type: str = ""
+
+
 class JiraIssueRead(JiraSearchResult):
     id: int
     synced_at: datetime
+    links: List[JiraIssueLinkRef] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -181,9 +194,9 @@ class ProjectJiraLinkRead(BaseModel):
     issue: JiraIssueRead
 
 
-class TaskJiraLinkRead(BaseModel):
+class DeliverableJiraLinkRead(BaseModel):
     id: int
-    task_id: int
+    deliverable_id: int
     linked_at: datetime
     issue: JiraIssueRead
 
@@ -194,6 +207,21 @@ class ProjectJiraLinksGrouped(BaseModel):
     project_id: int
     links: List[ProjectJiraLinkRead]
     stale: bool
+    synced_at: Optional[datetime] = None
+
+
+class ProjectDeliverableJiraLinks(BaseModel):
+    """Every deliverable's Jira links for one project, keyed by deliverable id.
+
+    Powers the optional Gantt story overlay in a single request instead of one
+    call per deliverable row.
+    """
+
+    project_id: int
+    links_by_deliverable: Dict[int, List[DeliverableJiraLinkRead]] = Field(
+        default_factory=dict
+    )
+    stale: bool = False
     synced_at: Optional[datetime] = None
 
 

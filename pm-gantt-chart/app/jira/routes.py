@@ -63,7 +63,9 @@ def jira_get_issue(key: str) -> schemas.JiraSearchResult:
 @router.get("/jira/issues/{epic_key}/children", response_model=List[schemas.JiraSearchResult])
 def jira_epic_children(
     epic_key: str,
-    limit: int = Query(50, ge=1, le=200),
+    # High default so the client-side status filter sees the whole epic; a busy
+    # epic's open stories would otherwise be cut off before filtering.
+    limit: int = Query(200, ge=1, le=200),
 ) -> List[schemas.JiraSearchResult]:
     return _handle_jira_call(service.fetch_children, epic_key, limit=limit)
 
@@ -111,34 +113,52 @@ def sync_project_jira(
     return _handle_jira_call(service.force_sync_project, db, project_id)
 
 
-# ---------------------------------------------------------------- task linking
+@router.get(
+    "/projects/{project_id}/jira/deliverable-links",
+    response_model=schemas.ProjectDeliverableJiraLinks,
+)
+def project_deliverable_jira_links(
+    project_id: int, db: Session = Depends(get_db)
+) -> schemas.ProjectDeliverableJiraLinks:
+    """Backs the optional Gantt story overlay in one request."""
+    return _handle_jira_call(service.list_project_deliverable_links, db, project_id)
 
 
-@router.get("/tasks/{task_id}/jira", response_model=List[schemas.TaskJiraLinkRead])
-def task_jira_links(
-    task_id: int, db: Session = Depends(get_db)
-) -> List[schemas.TaskJiraLinkRead]:
-    return _handle_jira_call(service.list_task_links, db, task_id)
+# --------------------------------------------------------- deliverable linking
+
+
+@router.get(
+    "/deliverables/{deliverable_id}/jira",
+    response_model=List[schemas.DeliverableJiraLinkRead],
+)
+def deliverable_jira_links(
+    deliverable_id: int, db: Session = Depends(get_db)
+) -> List[schemas.DeliverableJiraLinkRead]:
+    return _handle_jira_call(service.list_deliverable_links, db, deliverable_id)
 
 
 @router.post(
-    "/tasks/{task_id}/jira/links",
-    response_model=schemas.TaskJiraLinkRead,
+    "/deliverables/{deliverable_id}/jira/links",
+    response_model=schemas.DeliverableJiraLinkRead,
     status_code=201,
 )
-def create_task_jira_link(
-    task_id: int,
+def create_deliverable_jira_link(
+    deliverable_id: int,
     payload: schemas.JiraLinkCreate,
     db: Session = Depends(get_db),
-) -> schemas.TaskJiraLinkRead:
-    return _handle_jira_call(service.link_issue_to_task, db, task_id, payload)
+) -> schemas.DeliverableJiraLinkRead:
+    return _handle_jira_call(
+        service.link_issue_to_deliverable, db, deliverable_id, payload
+    )
 
 
 @router.delete(
-    "/tasks/{task_id}/jira/links/{link_id}", status_code=204, response_class=Response
+    "/deliverables/{deliverable_id}/jira/links/{link_id}",
+    status_code=204,
+    response_class=Response,
 )
-def delete_task_jira_link(
-    task_id: int, link_id: int, db: Session = Depends(get_db)
+def delete_deliverable_jira_link(
+    deliverable_id: int, link_id: int, db: Session = Depends(get_db)
 ) -> Response:
-    _handle_jira_call(service.unlink_task_link, db, task_id, link_id)
+    _handle_jira_call(service.unlink_deliverable_link, db, deliverable_id, link_id)
     return Response(status_code=204)

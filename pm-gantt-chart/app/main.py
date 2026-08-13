@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from .env import load_dotenv
@@ -40,11 +40,66 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(jira_router)
 
 
+# "task" was renamed to "deliverable" project-wide. Existing local databases
+# carry real Jira links, so rename in place rather than recreating the schema.
+_TABLE_RENAMES = [
+    ("tasks", "deliverables"),
+    ("task_dependencies", "deliverable_dependencies"),
+    ("task_contributor_teams", "deliverable_contributor_teams"),
+    ("task_jira_links", "deliverable_jira_links"),
+]
+_COLUMN_RENAMES = [
+    ("task_dependencies", "upstream_task_id", "upstream_deliverable_id"),
+    ("task_dependencies", "downstream_task_id", "downstream_deliverable_id"),
+    ("task_contributor_teams", "task_id", "deliverable_id"),
+    ("task_jira_links", "task_id", "deliverable_id"),
+]
+
+
+def _migrate_deliverable_rename(bind=None) -> None:
+    """Rename the legacy `task*` tables/columns to `deliverable*`.
+
+    Idempotent: every step checks the live schema first, so a fresh database and
+    an already-migrated one both no-op. `tasks` is renamed before the child
+    tables so SQLite rewrites their foreign-key clauses for us.
+    """
+    bind = bind if bind is not None else engine
+    inspector = inspect(bind)
+    tables = set(inspector.get_table_names())
+    if not any(old in tables for old, _ in _TABLE_RENAMES):
+        return
+
+    with bind.begin() as connection:
+        if "tasks" in tables and "deliverables" not in tables:
+            connection.execute(text("ALTER TABLE tasks RENAME TO deliverables"))
+
+        for table, old_column, new_column in _COLUMN_RENAMES:
+            if table not in tables:
+                continue
+            columns = {column["name"] for column in inspector.get_columns(table)}
+            if old_column in columns and new_column not in columns:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {table} RENAME COLUMN {old_column} TO {new_column}"
+                    )
+                )
+
+        for old_table, new_table in _TABLE_RENAMES[1:]:
+            if old_table in tables and new_table not in tables:
+                connection.execute(
+                    text(f"ALTER TABLE {old_table} RENAME TO {new_table}")
+                )
+
+        # Stale after the table rename; create_all adds ix_deliverables_id.
+        connection.execute(text("DROP INDEX IF EXISTS ix_tasks_id"))
+
+
 def _ensure_v2_schema() -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
     if "projects" not in existing_tables:
         Base.metadata.drop_all(bind=engine)
+    _migrate_deliverable_rename(engine)
     Base.metadata.create_all(bind=engine)
 
 
@@ -182,29 +237,39 @@ def delete_project_team(
     return Response(status_code=204)
 
 
-@app.get("/api/projects/{project_id}/tasks", response_model=List[schemas.TaskRead])
-def get_project_tasks(
+@app.get(
+    "/api/projects/{project_id}/deliverables",
+    response_model=List[schemas.DeliverableRead],
+)
+def get_project_deliverables(
     project_id: int, db: Session = Depends(get_db)
-) -> List[schemas.TaskRead]:
+) -> List[schemas.DeliverableRead]:
     project = services.get_project(db, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found.")
-    return [services.serialize_task(task) for task in services.list_tasks(db, project_id)]
+    return [
+        services.serialize_deliverable(deliverable)
+        for deliverable in services.list_deliverables(db, project_id)
+    ]
 
 
-@app.post("/api/projects/{project_id}/tasks", response_model=schemas.TaskRead, status_code=201)
-def create_project_task(
-    project_id: int, payload: schemas.TaskCreate, db: Session = Depends(get_db)
-) -> schemas.TaskRead:
+@app.post(
+    "/api/projects/{project_id}/deliverables",
+    response_model=schemas.DeliverableRead,
+    status_code=201,
+)
+def create_project_deliverable(
+    project_id: int, payload: schemas.DeliverableCreate, db: Session = Depends(get_db)
+) -> schemas.DeliverableRead:
     if services.get_project(db, project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found.")
 
     payload_data = payload.model_dump()
     payload_data["project_id"] = project_id
-    scoped_payload = schemas.TaskCreate(**payload_data)
+    scoped_payload = schemas.DeliverableCreate(**payload_data)
 
     try:
-        task = services.create_task(db, project_id, scoped_payload)
+        deliverable = services.create_deliverable(db, project_id, scoped_payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -214,50 +279,61 @@ def create_project_task(
         if not key:
             continue
         try:
-            jira_service.link_issue_to_task(
-                db, task.id, schemas.JiraLinkCreate(jira_key=key)
+            jira_service.link_issue_to_deliverable(
+                db, deliverable.id, schemas.JiraLinkCreate(jira_key=key)
             )
         except JiraNotConfigured:
             break
         except Exception:  # noqa: BLE001 - link is best-effort
             continue
 
-    refreshed = next(item for item in services.list_tasks(db, project_id) if item.id == task.id)
-    return services.serialize_task(refreshed)
+    refreshed = next(
+        item
+        for item in services.list_deliverables(db, project_id)
+        if item.id == deliverable.id
+    )
+    return services.serialize_deliverable(refreshed)
 
 
-@app.put("/api/projects/{project_id}/tasks/{task_id}", response_model=schemas.TaskRead)
-def update_project_task(
+@app.put(
+    "/api/projects/{project_id}/deliverables/{deliverable_id}",
+    response_model=schemas.DeliverableRead,
+)
+def update_project_deliverable(
     project_id: int,
-    task_id: int,
-    payload: schemas.TaskUpdate,
+    deliverable_id: int,
+    payload: schemas.DeliverableUpdate,
     db: Session = Depends(get_db),
-) -> schemas.TaskRead:
-    task = db.get(models.Task, task_id)
-    if task is None or task.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Task not found.")
+) -> schemas.DeliverableRead:
+    deliverable = db.get(models.Deliverable, deliverable_id)
+    if deliverable is None or deliverable.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Deliverable not found.")
 
     try:
-        services.update_task(db, project_id, task, payload)
+        services.update_deliverable(db, project_id, deliverable, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    refreshed = next(item for item in services.list_tasks(db, project_id) if item.id == task_id)
-    return services.serialize_task(refreshed)
+    refreshed = next(
+        item
+        for item in services.list_deliverables(db, project_id)
+        if item.id == deliverable_id
+    )
+    return services.serialize_deliverable(refreshed)
 
 
 @app.delete(
-    "/api/projects/{project_id}/tasks/{task_id}",
+    "/api/projects/{project_id}/deliverables/{deliverable_id}",
     status_code=204,
     response_class=Response,
 )
-def delete_project_task(
-    project_id: int, task_id: int, db: Session = Depends(get_db)
+def delete_project_deliverable(
+    project_id: int, deliverable_id: int, db: Session = Depends(get_db)
 ) -> Response:
-    task = db.get(models.Task, task_id)
-    if task is None or task.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Task not found.")
-    db.delete(task)
+    deliverable = db.get(models.Deliverable, deliverable_id)
+    if deliverable is None or deliverable.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Deliverable not found.")
+    db.delete(deliverable)
     db.commit()
     return Response(status_code=204)
 

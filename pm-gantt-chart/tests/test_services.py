@@ -12,7 +12,7 @@ class RiskCalculationTests(unittest.TestCase):
         project = models.Project(id=1, name="Alpha", description="", color="#0f766e")
         team = models.Team(id=1, project_id=1, name="Platform", color="#0f766e")
         team.project = project
-        upstream = models.Task(
+        upstream = models.Deliverable(
             id=1,
             project_id=1,
             title="Upstream",
@@ -26,7 +26,7 @@ class RiskCalculationTests(unittest.TestCase):
             progress=80,
         )
         upstream.team = team
-        downstream = models.Task(
+        downstream = models.Deliverable(
             id=2,
             project_id=1,
             title="Downstream",
@@ -40,8 +40,8 @@ class RiskCalculationTests(unittest.TestCase):
             progress=0,
         )
         downstream.team = team
-        dependency = models.TaskDependency(upstream_task_id=1, downstream_task_id=2)
-        dependency.upstream_task = upstream
+        dependency = models.DeliverableDependency(upstream_deliverable_id=1, downstream_deliverable_id=2)
+        dependency.upstream_deliverable = upstream
         downstream.incoming_links = [dependency]
 
         risk = services.calculate_risk(downstream)
@@ -76,9 +76,9 @@ class ProjectIsolationTests(unittest.TestCase):
             db.add_all([team1, team2])
             db.flush()
 
-            task1 = models.Task(
+            deliverable1 = models.Deliverable(
                 project_id=p1.id,
-                title="Task P1",
+                title="Deliverable P1",
                 description="",
                 team_id=team1.id,
                 planned_start=date(2026, 7, 1),
@@ -88,9 +88,9 @@ class ProjectIsolationTests(unittest.TestCase):
                 status="planned",
                 progress=0,
             )
-            task2 = models.Task(
+            deliverable2 = models.Deliverable(
                 project_id=p2.id,
-                title="Task P2",
+                title="Deliverable P2",
                 description="",
                 team_id=team2.id,
                 planned_start=date(2026, 7, 3),
@@ -100,11 +100,11 @@ class ProjectIsolationTests(unittest.TestCase):
                 status="planned",
                 progress=0,
             )
-            db.add_all([task1, task2])
+            db.add_all([deliverable1, deliverable2])
             db.flush()
 
             with self.assertRaises(ValueError):
-                services.replace_dependencies(db, task2, [task1.id])
+                services.replace_dependencies(db, deliverable2, [deliverable1.id])
         finally:
             db.close()
 
@@ -130,7 +130,7 @@ class ProjectMutationTests(unittest.TestCase):
         self.db.add(team)
         self.db.flush()
 
-        upstream = models.Task(
+        upstream = models.Deliverable(
             project_id=project.id,
             title=f"{name} Upstream",
             description="",
@@ -140,7 +140,7 @@ class ProjectMutationTests(unittest.TestCase):
             status="planned",
             progress=0,
         )
-        downstream = models.Task(
+        downstream = models.Deliverable(
             project_id=project.id,
             title=f"{name} Downstream",
             description="",
@@ -153,8 +153,8 @@ class ProjectMutationTests(unittest.TestCase):
         self.db.add_all([upstream, downstream])
         self.db.flush()
         self.db.add(
-            models.TaskDependency(
-                upstream_task_id=upstream.id, downstream_task_id=downstream.id
+            models.DeliverableDependency(
+                upstream_deliverable_id=upstream.id, downstream_deliverable_id=downstream.id
             )
         )
 
@@ -213,16 +213,16 @@ class ProjectMutationTests(unittest.TestCase):
         services.delete_project(self.db, alpha)
 
         self.assertIsNone(self.db.get(models.Project, alpha_id))
-        for model in (models.Team, models.Task, models.ProjectJiraLink):
+        for model in (models.Team, models.Deliverable, models.ProjectJiraLink):
             remaining = self.db.scalars(
                 select(model).where(model.project_id == alpha_id)
             ).all()
             self.assertEqual(list(remaining), [], f"{model.__name__} rows survived")
-        surviving_dependencies = list(self.db.scalars(select(models.TaskDependency)).all())
+        surviving_dependencies = list(self.db.scalars(select(models.DeliverableDependency)).all())
         self.assertEqual(len(surviving_dependencies), 1)
 
         self.assertIsNotNone(self.db.get(models.Project, beta_id))
-        self.assertEqual(len(services.list_tasks(self.db, beta_id)), 2)
+        self.assertEqual(len(services.list_deliverables(self.db, beta_id)), 2)
         self.assertEqual(len(services.list_teams(self.db, beta_id)), 1)
         # The cached Jira issue itself is shared, so it must outlive the link.
         self.assertEqual(len(list(self.db.scalars(select(models.JiraIssue)).all())), 2)

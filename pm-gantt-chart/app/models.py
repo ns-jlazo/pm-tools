@@ -19,13 +19,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 
 
-# Contributing teams (many-to-many); the primary owner remains Task.team_id.
-task_contributor_teams = Table(
-    "task_contributor_teams",
+# Contributing teams (many-to-many); the primary owner remains Deliverable.team_id.
+deliverable_contributor_teams = Table(
+    "deliverable_contributor_teams",
     Base.metadata,
     Column(
-        "task_id",
-        ForeignKey("tasks.id", ondelete="CASCADE"),
+        "deliverable_id",
+        ForeignKey("deliverables.id", ondelete="CASCADE"),
         primary_key=True,
     ),
     Column(
@@ -47,8 +47,8 @@ class Project(Base):
     teams: Mapped[List["Team"]] = relationship(
         "Team", back_populates="project", cascade="all, delete-orphan"
     )
-    tasks: Mapped[List["Task"]] = relationship(
-        "Task", back_populates="project", cascade="all, delete-orphan"
+    deliverables: Mapped[List["Deliverable"]] = relationship(
+        "Deliverable", back_populates="project", cascade="all, delete-orphan"
     )
 
 
@@ -62,38 +62,42 @@ class Team(Base):
     color: Mapped[str] = mapped_column(String(20), nullable=False)
 
     project: Mapped[Project] = relationship("Project", back_populates="teams")
-    tasks: Mapped[List["Task"]] = relationship("Task", back_populates="team")
-    contributing_tasks: Mapped[List["Task"]] = relationship(
-        "Task",
-        secondary=task_contributor_teams,
+    deliverables: Mapped[List["Deliverable"]] = relationship(
+        "Deliverable", back_populates="team"
+    )
+    contributing_deliverables: Mapped[List["Deliverable"]] = relationship(
+        "Deliverable",
+        secondary=deliverable_contributor_teams,
         back_populates="contributor_teams",
     )
 
 
-class TaskDependency(Base):
-    __tablename__ = "task_dependencies"
+class DeliverableDependency(Base):
+    __tablename__ = "deliverable_dependencies"
 
-    upstream_task_id: Mapped[int] = mapped_column(
-        ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    upstream_deliverable_id: Mapped[int] = mapped_column(
+        ForeignKey("deliverables.id", ondelete="CASCADE"), primary_key=True
     )
-    downstream_task_id: Mapped[int] = mapped_column(
-        ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    downstream_deliverable_id: Mapped[int] = mapped_column(
+        ForeignKey("deliverables.id", ondelete="CASCADE"), primary_key=True
     )
 
-    upstream_task: Mapped["Task"] = relationship(
-        "Task",
-        foreign_keys=[upstream_task_id],
+    upstream_deliverable: Mapped["Deliverable"] = relationship(
+        "Deliverable",
+        foreign_keys=[upstream_deliverable_id],
         back_populates="outgoing_links",
     )
-    downstream_task: Mapped["Task"] = relationship(
-        "Task",
-        foreign_keys=[downstream_task_id],
+    downstream_deliverable: Mapped["Deliverable"] = relationship(
+        "Deliverable",
+        foreign_keys=[downstream_deliverable_id],
         back_populates="incoming_links",
     )
 
 
-class Task(Base):
-    __tablename__ = "tasks"
+class Deliverable(Base):
+    """A project feature or enhancement tracked on the timeline."""
+
+    __tablename__ = "deliverables"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False)
@@ -107,27 +111,27 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(30), default="planned", nullable=False)
     progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    project: Mapped[Project] = relationship("Project", back_populates="tasks")
-    team: Mapped[Team] = relationship("Team", back_populates="tasks")
-    outgoing_links: Mapped[List[TaskDependency]] = relationship(
-        "TaskDependency",
-        foreign_keys=[TaskDependency.upstream_task_id],
-        back_populates="upstream_task",
+    project: Mapped[Project] = relationship("Project", back_populates="deliverables")
+    team: Mapped[Team] = relationship("Team", back_populates="deliverables")
+    outgoing_links: Mapped[List[DeliverableDependency]] = relationship(
+        "DeliverableDependency",
+        foreign_keys=[DeliverableDependency.upstream_deliverable_id],
+        back_populates="upstream_deliverable",
         cascade="all, delete-orphan",
     )
-    incoming_links: Mapped[List[TaskDependency]] = relationship(
-        "TaskDependency",
-        foreign_keys=[TaskDependency.downstream_task_id],
-        back_populates="downstream_task",
+    incoming_links: Mapped[List[DeliverableDependency]] = relationship(
+        "DeliverableDependency",
+        foreign_keys=[DeliverableDependency.downstream_deliverable_id],
+        back_populates="downstream_deliverable",
         cascade="all, delete-orphan",
     )
-    jira_links: Mapped[List["TaskJiraLink"]] = relationship(
-        "TaskJiraLink", back_populates="task", cascade="all, delete-orphan"
+    jira_links: Mapped[List["DeliverableJiraLink"]] = relationship(
+        "DeliverableJiraLink", back_populates="deliverable", cascade="all, delete-orphan"
     )
     contributor_teams: Mapped[List[Team]] = relationship(
         "Team",
-        secondary=task_contributor_teams,
-        back_populates="contributing_tasks",
+        secondary=deliverable_contributor_teams,
+        back_populates="contributing_deliverables",
     )
 
 
@@ -151,8 +155,8 @@ class JiraIssue(Base):
     project_links: Mapped[List["ProjectJiraLink"]] = relationship(
         "ProjectJiraLink", back_populates="issue", cascade="all, delete-orphan"
     )
-    task_links: Mapped[List["TaskJiraLink"]] = relationship(
-        "TaskJiraLink", back_populates="issue", cascade="all, delete-orphan"
+    deliverable_links: Mapped[List["DeliverableJiraLink"]] = relationship(
+        "DeliverableJiraLink", back_populates="issue", cascade="all, delete-orphan"
     )
 
 
@@ -180,20 +184,24 @@ class ProjectJiraLink(Base):
     issue: Mapped[JiraIssue] = relationship("JiraIssue", back_populates="project_links")
 
 
-class TaskJiraLink(Base):
-    __tablename__ = "task_jira_links"
+class DeliverableJiraLink(Base):
+    __tablename__ = "deliverable_jira_links"
     __table_args__ = (
-        UniqueConstraint("task_id", "jira_issue_id", name="uq_task_jira_link"),
+        UniqueConstraint("deliverable_id", "jira_issue_id", name="uq_deliverable_jira_link"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    task_id: Mapped[int] = mapped_column(
-        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    deliverable_id: Mapped[int] = mapped_column(
+        ForeignKey("deliverables.id", ondelete="CASCADE"), nullable=False
     )
     jira_issue_id: Mapped[int] = mapped_column(
         ForeignKey("jira_issues.id", ondelete="CASCADE"), nullable=False
     )
     linked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
-    task: Mapped[Task] = relationship("Task", back_populates="jira_links")
-    issue: Mapped[JiraIssue] = relationship("JiraIssue", back_populates="task_links")
+    deliverable: Mapped[Deliverable] = relationship(
+        "Deliverable", back_populates="jira_links"
+    )
+    issue: Mapped[JiraIssue] = relationship(
+        "JiraIssue", back_populates="deliverable_links"
+    )

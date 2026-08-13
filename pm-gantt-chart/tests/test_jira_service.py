@@ -76,7 +76,7 @@ class JiraServiceTests(unittest.TestCase):
         team = models.Team(project_id=project.id, name="Platform", color="#0f766e")
         self.db.add(team)
         self.db.flush()
-        task = models.Task(
+        deliverable = models.Deliverable(
             project_id=project.id,
             title="T1",
             description="",
@@ -86,11 +86,11 @@ class JiraServiceTests(unittest.TestCase):
             status="planned",
             progress=0,
         )
-        self.db.add(task)
+        self.db.add(deliverable)
         self.db.commit()
         self.project_id = project.id
         self.team_id = team.id
-        self.task_id = task.id
+        self.deliverable_id = deliverable.id
 
         self.fake = _FakeClient()
         self._patcher = mock.patch.object(jira_service, "get_client", return_value=self.fake)
@@ -167,19 +167,24 @@ class JiraServiceTests(unittest.TestCase):
             self.db.query(models.JiraIssue).filter_by(jira_key="ABC-4").count(), 1
         )
 
-    def test_task_link_roundtrip(self) -> None:
+    def test_deliverable_link_roundtrip(self) -> None:
         self.fake.add("STORY-1", status="Done", category="done")
-        link = jira_service.link_issue_to_task(
-            self.db, self.task_id, schemas.JiraLinkCreate(jira_key="STORY-1")
+        link = jira_service.link_issue_to_deliverable(
+            self.db, self.deliverable_id, schemas.JiraLinkCreate(jira_key="STORY-1")
         )
         self.assertEqual(link.issue.key, "STORY-1")
 
-        links = jira_service.list_task_links(self.db, self.task_id, refresh_stale=False)
+        links = jira_service.list_deliverable_links(
+            self.db, self.deliverable_id, refresh_stale=False
+        )
         self.assertEqual(len(links), 1)
 
-        jira_service.unlink_task_link(self.db, self.task_id, link.id)
+        jira_service.unlink_deliverable_link(self.db, self.deliverable_id, link.id)
         self.assertEqual(
-            jira_service.list_task_links(self.db, self.task_id, refresh_stale=False), []
+            jira_service.list_deliverable_links(
+                self.db, self.deliverable_id, refresh_stale=False
+            ),
+            [],
         )
 
 
