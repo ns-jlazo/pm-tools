@@ -8,6 +8,8 @@ const html = htm.bind((type, props, ...children) =>
   React.createElement(type || React.Fragment, props, ...children)
 );
 const STATUS_OPTIONS = ["planned", "in_progress", "blocked", "done"];
+// Keep in step with the `.toast.leaving` animation in styles.css.
+const TOAST_FADE_MS = 400;
 const ISSUE_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 const STATUS_FILTER_PREFIX = "pm-tool.jira-status-filter.";
 const GANTT_JIRA_PREFIX = "pm-tool.gantt-jira.";
@@ -130,6 +132,17 @@ function progressFromIssues(issues) {
   const all = issues || [];
   if (!all.length) return null;
   return Math.round((all.filter(isInProgressIssue).length / all.length) * 100);
+}
+
+// Progress from the stories linked to a saved deliverable *right now*. Same
+// share-underway formula and the same denominator as the label prefill: every
+// linked story counts, Done included.
+async function progressFromDeliverableLinks(deliverableId) {
+  const links = await api(`/api/deliverables/${deliverableId}/jira`);
+  return {
+    total: links.length,
+    progress: progressFromIssues(links.map((link) => link.issue)),
+  };
 }
 
 function readStored(key, fallback) {
@@ -1483,6 +1496,46 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
   `;
 }
 
+// Re-derives Progress % from the deliverable's linked stories on demand — the
+// "By label" prefill only fires at link time, so this is the way to pick up Jira
+// movement afterwards. It fills the still-editable field; saving is up to the user.
+// Render it as a sibling of the Progress label, never inside it: a button inside a
+// <label> forwards its click to the labelled input.
+function RecalcProgressButton({ deliverableId, onProgress, onMessage }) {
+  const [working, setWorking] = useState(false);
+
+  const recalc = async () => {
+    setWorking(true);
+    try {
+      const { total, progress } = await progressFromDeliverableLinks(deliverableId);
+      if (!total) {
+        onMessage("No Jira stories linked to this deliverable yet — nothing to recalculate.", "error");
+        return;
+      }
+      onProgress(progress);
+      onMessage(
+        `Progress recalculated to ${progress}% from ${total} linked story(s) — save to apply.`,
+        "success"
+      );
+    } catch (err) {
+      onMessage(await describeJiraFailure(err), "error");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return html`
+    <button
+      className="button-secondary recalc-progress"
+      type="button"
+      onClick=${recalc}
+      disabled=${working}
+      aria-busy=${working}
+      title="Recalculate from the Jira stories linked to this deliverable"
+    >${working ? "Recalculating…" : "Recalculate from Jira"}</button>
+  `;
+}
+
 function DeliverableForm({
   teams,
   deliverables,
@@ -1494,6 +1547,8 @@ function DeliverableForm({
   showJiraPicker,
   epicKeys,
   statusFilter,
+  deliverableId,
+  onMessage,
 }) {
   const handleField = (key) => (event) => setForm({ ...form, [key]: event.target.value });
   const dependencySet = new Set((form.dependency_ids || []).map(String));
@@ -1598,6 +1653,13 @@ function DeliverableForm({
         <div className="field">
           <label htmlFor=${`${submitLabel}-progress`}>Progress %</label>
           <input id=${`${submitLabel}-progress`} type="number" min="0" max="100" value=${form.progress} onInput=${handleField("progress")} />
+          ${deliverableId
+            ? html`<${RecalcProgressButton}
+                deliverableId=${deliverableId}
+                onProgress=${(value) => setForm((current) => ({ ...current, progress: value }))}
+                onMessage=${onMessage}
+              />`
+            : null}
         </div>
 
         <div className="field-wide">
@@ -1734,55 +1796,88 @@ function InlineEditPopover({
   epicTeams,
 }) {
   const handleField = (key) => (event) => setForm({ ...form, [key]: event.target.value });
-  // A plain div, not a form: the story picker it now hosts renders its own
-  // forms, and nesting forms is invalid.
-  return html`
-    <div className="inline-popover">
-      <strong>Quick edit: ${deliverable.title}</strong>
-      <div className="inline-grid">
-        <label>
-          Status
-          <select value=${form.status} onChange=${handleField("status")}>
-            ${STATUS_OPTIONS.map((status) => html`<option key=${status} value=${status}>${humanizeStatus(status)}</option>`) }
-          </select>
-        </label>
-        <label>
-          Progress
-          <input type="number" min="0" max="100" value=${form.progress} onInput=${handleField("progress")} />
-        </label>
-        <label>
-          Current start
-          <input type="date" value=${form.current_start || ""} onInput=${handleField("current_start")} />
-        </label>
-        <label>
-          Current end
-          <input type="date" value=${form.current_end || ""} onInput=${handleField("current_end")} />
-        </label>
+
+  // Esc closes, but only when this modal is the top one: the story picker is
+  // portalled to <body> as well, so a document-level listener would otherwise see
+  // its Esc and dismiss the editor out from under it.
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      if (document.querySelector(".jira-modal-backdrop:not(.inline-modal-backdrop)")) return;
+      onCancel();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onCancel]);
+
+  // Portalled to <body> like the story picker: as an in-row element this stretched
+  // the timeline grid and scrolled with the chart. A plain div, not a form — the
+  // picker it hosts renders its own forms, and nesting forms is invalid.
+  return createPortal(
+    html`
+    <div
+      className="jira-modal-backdrop inline-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      onClick=${onCancel}
+    >
+      <div className="jira-modal inline-modal" onClick=${(event) => event.stopPropagation()}>
+        <header className="jira-modal-header">
+          <h3>Quick edit: ${deliverable.title}</h3>
+          <button className="button-secondary" type="button" onClick=${onCancel}>Close</button>
+        </header>
+        <div className="inline-grid">
+          <label>
+            Status
+            <select value=${form.status} onChange=${handleField("status")}>
+              ${STATUS_OPTIONS.map((status) => html`<option key=${status} value=${status}>${humanizeStatus(status)}</option>`) }
+            </select>
+          </label>
+          <label>
+            Progress
+            <input type="number" min="0" max="100" value=${form.progress} onInput=${handleField("progress")} />
+          </label>
+          <${RecalcProgressButton}
+            deliverableId=${deliverable.id}
+            onProgress=${(value) => setForm((current) => ({ ...current, progress: value }))}
+            onMessage=${onMessage}
+          />
+          <label>
+            Current start
+            <input type="date" value=${form.current_start || ""} onInput=${handleField("current_start")} />
+          </label>
+          <label>
+            Current end
+            <input type="date" value=${form.current_end || ""} onInput=${handleField("current_end")} />
+          </label>
+        </div>
+        <div className="actions">
+          <button
+            className="button-primary"
+            type="button"
+            onClick=${onSave}
+            disabled=${submitting}
+            aria-busy=${submitting}
+          >Save</button>
+          <button className="button-secondary" type="button" onClick=${onCancel}>Cancel</button>
+        </div>
+        <${JiraDeliverableLinks}
+          deliverableId=${deliverable.id}
+          onMessage=${onMessage}
+          epicKeys=${epicKeys}
+          statusFilter=${statusFilter}
+          onLinked=${onLinksChanged}
+          onProgressSuggested=${(value) =>
+            setForm((current) => ({ ...current, progress: value }))}
+          teams=${teams}
+          epicTeams=${epicTeams}
+          compact=${true}
+        />
       </div>
-      <div className="actions">
-        <button
-          className="button-primary"
-          type="button"
-          onClick=${onSave}
-          disabled=${submitting}
-          aria-busy=${submitting}
-        >Save</button>
-        <button className="button-secondary" type="button" onClick=${onCancel}>Cancel</button>
-      </div>
-      <${JiraDeliverableLinks}
-        deliverableId=${deliverable.id}
-        onMessage=${onMessage}
-        epicKeys=${epicKeys}
-        statusFilter=${statusFilter}
-        onLinked=${onLinksChanged}
-        onProgressSuggested=${(value) =>
-          setForm((current) => ({ ...current, progress: value }))}
-        teams=${teams}
-        epicTeams=${epicTeams}
-        compact=${true}
-      />
     </div>
-  `;
+  `,
+    document.body
+  );
 }
 
 function GanttStoryList({ links, statusFilter, teams, epicTeams }) {
@@ -1885,7 +1980,6 @@ function GanttRow({
   barRefs,
   isEditing,
   onOpenInline,
-  inlineControls,
   stories,
   showStories,
   statusFilter,
@@ -1936,24 +2030,6 @@ function GanttRow({
           <span className="bar-title">${deliverable.title}</span>
           <span className="bar-progress">${deliverable.progress}%</span>
         </button>
-        ${isEditing
-          ? html`
-              <${InlineEditPopover}
-                deliverable=${deliverable}
-                form=${inlineControls.form}
-                setForm=${inlineControls.setForm}
-                onSave=${inlineControls.onSave}
-                onCancel=${inlineControls.onCancel}
-                submitting=${inlineControls.submitting}
-                onMessage=${inlineControls.onMessage}
-                epicKeys=${inlineControls.epicKeys}
-                statusFilter=${statusFilter}
-                onLinksChanged=${inlineControls.onLinksChanged}
-                teams=${teams}
-                epicTeams=${epicTeams}
-              />
-            `
-          : null}
       </div>
     </div>
   `;
@@ -2090,6 +2166,13 @@ function GanttChart({
     });
   };
 
+  // One modal for the whole chart, rendered outside the rows: only one deliverable
+  // is ever being edited, and keeping it out of a row's markup is what stops it
+  // from stretching the timeline grid.
+  const editingDeliverable = deliverables.find(
+    (deliverable) => String(deliverable.id) === editingDeliverableId
+  );
+
   const saveInline = () => {
     if (!editingDeliverableId) {
       return;
@@ -2193,18 +2276,6 @@ function GanttChart({
                           statusFilter=${statusFilter}
                           teams=${teams}
                           epicTeams=${epicTeams}
-                          inlineControls=${{
-                            form: inlineForm,
-                            setForm: setInlineForm,
-                            onSave: saveInline,
-                            onCancel: () => setEditingDeliverableId(""),
-                            submitting,
-                            onMessage,
-                            epicKeys,
-                            onLinksChanged: () => {
-                              if (showStories) loadStories();
-                            },
-                          }}
                         />
                       `
                     )
@@ -2214,6 +2285,25 @@ function GanttChart({
           )}
         </div>
       </div>
+
+      ${editingDeliverable
+        ? html`
+            <${InlineEditPopover}
+              deliverable=${editingDeliverable}
+              form=${inlineForm}
+              setForm=${setInlineForm}
+              onSave=${saveInline}
+              onCancel=${() => setEditingDeliverableId("")}
+              submitting=${submitting}
+              onMessage=${onMessage}
+              epicKeys=${epicKeys}
+              statusFilter=${statusFilter}
+              onLinksChanged=${() => { if (showStories) loadStories(); }}
+              teams=${teams}
+              epicTeams=${epicTeams}
+            />
+          `
+        : null}
     </section>
   `;
 }
@@ -2780,6 +2870,8 @@ function WorkspaceView({
                   submitLabel="Save update"
                   submitting=${submitting}
                   showJiraPicker=${false}
+                  deliverableId=${Number(editDeliverableId)}
+                  onMessage=${onNotify}
                 />
                 <${JiraDeliverableLinks}
                   deliverableId=${Number(editDeliverableId)}
@@ -2850,10 +2942,38 @@ function App() {
   const [editForm, setEditForm] = useState(DEFAULT_DELIVERABLE);
   const [csvFile, setCsvFile] = useState(null);
 
-  const [message, setMessage] = useState("");
-  const [messageTone, setMessageTone] = useState("success");
+  // One transient toast. `id` is monotonic so a fresh message restarts the fade
+  // timer instead of inheriting the previous one's.
+  const [toast, setToast] = useState(null);
+  const toastSeq = useRef(0);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+
+  const notify = (text, tone) => {
+    if (!text) return;
+    toastSeq.current += 1;
+    setToast({ id: toastSeq.current, text, tone: tone || "success", leaving: false });
+  };
+
+  const dismissToast = () =>
+    setToast((current) => (current ? { ...current, leaving: true } : current));
+
+  // Errors get longer on screen than confirmations, but nothing stays for good —
+  // the old banner had no timer at all and sat at the top of the page forever.
+  useEffect(() => {
+    if (!toast || toast.leaving) return undefined;
+    const handle = window.setTimeout(dismissToast, toast.tone === "error" ? 8000 : 3500);
+    return () => window.clearTimeout(handle);
+  }, [toast && toast.id, toast && toast.leaving]);
+
+  // Second stage: unmount once the fade-out animation has run.
+  useEffect(() => {
+    if (!toast || !toast.leaving) return undefined;
+    const handle = window.setTimeout(() => {
+      setToast((current) => (current && current.id === toast.id ? null : current));
+    }, TOAST_FADE_MS);
+    return () => window.clearTimeout(handle);
+  }, [toast && toast.id, toast && toast.leaving]);
 
   const loadProjects = async () => {
     const data = await api("/api/projects");
@@ -2888,8 +3008,7 @@ function App() {
       try {
         await loadProjects();
       } catch (error) {
-        setMessage(error.message);
-        setMessageTone("error");
+        notify(error.message, "error");
       } finally {
         setLoading(false);
       }
@@ -2912,13 +3031,11 @@ function App() {
     setSubmitting(true);
     try {
       await api(path, { method, body: JSON.stringify(payload) });
-      setMessage(onDone.message);
-      setMessageTone("success");
+      notify(onDone.message, "success");
       onDone.reset();
       await refreshWorkspace();
     } catch (error) {
-      setMessage(error.message);
-      setMessageTone("error");
+      notify(error.message, "error");
     } finally {
       setSubmitting(false);
     }
@@ -2944,8 +3061,7 @@ function App() {
       setEditDeliverableId("");
       setEditForm(DEFAULT_DELIVERABLE);
     } catch (error) {
-      setMessage(error.message);
-      setMessageTone("error");
+      notify(error.message, "error");
     } finally {
       setLoading(false);
     }
@@ -2961,12 +3077,10 @@ function App() {
       });
       setProjectForm(DEFAULT_PROJECT);
       await loadProjects();
-      setMessage("Project onboarded.");
-      setMessageTone("success");
+      notify("Project onboarded.", "success");
       await openProject(project.id);
     } catch (error) {
-      setMessage(error.message);
-      setMessageTone("error");
+      notify(error.message, "error");
     } finally {
       setSubmitting(false);
     }
@@ -3028,8 +3142,7 @@ function App() {
   const handleCsvSubmit = async (event) => {
     event.preventDefault();
     if (!csvFile) {
-      setMessage("Choose a CSV file first.");
-      setMessageTone("error");
+      notify("Choose a CSV file first.", "error");
       return;
     }
 
@@ -3042,15 +3155,14 @@ function App() {
         body: formData,
       });
       setCsvFile(null);
-      setMessage(
+      notify(
         `Imported ${result.imported_deliverables} deliverable(s), created ${result.created_teams} team(s)` +
-          (result.errors.length ? `. ${result.errors.length} warning(s) logged.` : ".")
+          (result.errors.length ? `. ${result.errors.length} warning(s) logged.` : "."),
+        result.errors.length ? "error" : "success"
       );
-      setMessageTone(result.errors.length ? "error" : "success");
       await refreshWorkspace();
     } catch (error) {
-      setMessage(error.message);
-      setMessageTone("error");
+      notify(error.message, "error");
     } finally {
       setSubmitting(false);
     }
@@ -3062,7 +3174,17 @@ function App() {
 
   return html`
     <>
-      ${message ? html`<div className=${`status-banner ${messageTone}`} role="status" aria-live="polite">${message}</div>` : null}
+      ${toast
+        ? html`
+            <div
+              className=${`toast ${toast.tone} ${toast.leaving ? "leaving" : ""}`}
+              role=${toast.tone === "error" ? "alert" : "status"}
+              aria-live="polite"
+              onClick=${dismissToast}
+              title="Dismiss"
+            >${toast.text}</div>
+          `
+        : null}
       ${selectedProjectId && dashboard
         ? html`
             <${WorkspaceView}
@@ -3080,7 +3202,7 @@ function App() {
               onUpdateSubmit=${handleUpdateSubmit}
               onCsvSubmit=${handleCsvSubmit}
               onInlineSave=${handleUpdateDeliverable}
-              onNotify=${(text, tone) => { setMessage(text); setMessageTone(tone || "success"); }}
+              onNotify=${notify}
               onWorkspaceRefresh=${refreshWorkspace}
               onProjectDeleted=${handleProjectDeleted}
               submitting=${submitting}

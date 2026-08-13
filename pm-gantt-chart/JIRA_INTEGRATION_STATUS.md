@@ -266,6 +266,68 @@ afterwards; the local DB is back to 2 workspaces / 10 deliverables / 3 Jira link
   the Update panel and the Gantt popover) — endpoints, payloads, and served markup
   verified, DOM interaction not driven.
 
+## Phase 10 — UX updates: on-demand progress, real quick-edit modal, fading toasts (2026-08-13)
+
+Frontend only — no schema, service, or route change. `GET /api/deliverables/{id}/jira`
+already returns every link with its issue `status` / `status_category`, which is all the
+recalculation needs.
+
+- [x] **Progress % can be re-derived any time.** The `By label` prefill only fires at
+  link time, so a deliverable's number went stale as soon as its stories moved in Jira.
+  New `progressFromDeliverableLinks()` (fetches the deliverable's links fresh on every
+  click, so it picks up Jira movement) feeding a shared `RecalcProgressButton`, rendered
+  under the Progress % input in **both** the Update-deliverable panel and the timeline
+  quick-edit. Same share-underway formula as the prefill — `progressFromIssues()`,
+  unchanged — and the same denominator: every linked story counts, Done included. The
+  button fills the still-editable field and says `save to apply`; it never writes to the
+  server itself. Zero links reports an explicit "nothing to recalculate" message.
+- [x] **The quick-edit is a real modal.** `InlineEditPopover` was an
+  in-row `position: absolute` element, so it stretched the timeline row, scrolled with
+  the chart, and fought the grid for width. It now `createPortal`s to `<body>` with the
+  same backdrop/panel markup as `JiraPickerModal` (`.jira-modal-backdrop.inline-modal-backdrop`
+  / `.jira-modal.inline-modal`, `overscroll-behavior: contain` so wheeling the story list
+  leaves the timeline alone). Backdrop click, `Close`, and `Esc` all dismiss; the Esc
+  handler ignores the key while a story picker is open above it (that picker is portalled
+  too, so a document-level listener would otherwise close the editor underneath it). The
+  render moved out of `GanttRow` — whose `inlineControls` prop is gone — into a single
+  instance in `GanttChart`, since only one deliverable is ever edited.
+- [x] **Notifications fade.** The old `.status-banner` was driven by `message` state that
+  nothing ever cleared, so "Deliverable created." sat at the top of the page for the rest
+  of the session and pushed the layout down. Replaced by one `toast` state
+  (`{id, text, tone, leaving}`, monotonic `id` so a new message restarts the timer):
+  auto-dismiss at 3.5s, errors at 8s, click to dismiss early, `toast-out` fade before
+  unmount (`TOAST_FADE_MS` is kept in step with the CSS animation). Fixed position at
+  top-right above both modal layers, so it no longer shifts the page. `onNotify(text, tone)`
+  keeps its signature — every caller (drawers, Jira panel, pickers) is untouched.
+- [x] `static/styles.css` — `.toast*` + `toast-in` / `toast-out` keyframes with a
+  `prefers-reduced-motion` fallback, `.inline-modal*` replacing `.inline-popover`,
+  `.recalc-progress`.
+- [x] `static/index.html` cache-busting bumped to `?v=20260813d`.
+
+## Verification checklist — Phase 10, run 2026-08-13 against `netskope.atlassian.net`
+
+Run on port 8010 with `.venv` (Python 3.10). All test links created below were removed
+afterwards; the DB is back to 3 Jira links (deliverable 1 → SNA-37796, SNA-38622;
+deliverable 2 → SNA-28969).
+
+- [x] `node --check static/app.js` clean; `.venv/bin/python -m pytest tests -q` →
+  **52 passed** (unchanged — the change is frontend-only).
+- [x] Recalculation math checked by evaluating the shipped `progressFromIssues` /
+  `isInProgressIssue` straight out of `static/app.js` against the live API: deliverable 1
+  (Blocked + Backlog) → **50%**, deliverable 2 (In Progress) → **100%**, deliverable 3
+  (no links) → the empty-state message path.
+- [x] **Done counts in the denominator, not the numerator.** Bulk-linked 2 Closed stories
+  (`SNA-35902`, `SNA-35958`) plus 1 Blocked (`SNA-37796`) to deliverable 3 → **33%**
+  (1 of 3), then unlinked all three (`204` each, `GET .../jira` → `[]`).
+- [x] Served assets are the busted versions (`?v=20260813d` → 200 for both `app.js` and
+  `styles.css`, and `GET /` carries the new query strings); the served `app.js` contains
+  `RecalcProgressButton`.
+- [ ] Browser click-through (Recalculate in the Update panel then `Save update`;
+  bar click → centered modal over a dimmed backdrop with the timeline row keeping its
+  height, internal scrolling, backdrop / Close / Esc dismiss, `Link story` picker stacking
+  above it; create + update a deliverable and watch the toasts fade) — endpoints, math,
+  and served markup verified, DOM interaction not driven.
+
 ## Deferred / out of scope
 
 - [~] Writing back to Jira (comments, status transitions, dates).

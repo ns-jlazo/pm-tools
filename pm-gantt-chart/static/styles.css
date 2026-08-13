@@ -592,21 +592,68 @@ th {
   min-width: min(90vw, 440px);
 }
 
-.status-banner {
-  margin: 18px 32px 0;
+/* Transient toast. Fixed, so a confirmation never shifts the page down, and
+   above both modal layers (30 / 40) so it stays readable over a picker. */
+.toast {
+  position: fixed;
+  top: 18px;
+  right: 24px;
+  z-index: 60;
+  max-width: min(420px, calc(100vw - 48px));
   padding: 12px 16px;
   border-radius: 12px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.18);
   font-weight: 600;
+  cursor: pointer;
+  animation: toast-in 220ms ease-out;
 }
 
-.status-banner.error {
+.toast.leaving {
+  /* Duration matches TOAST_FADE_MS in app.js. */
+  animation: toast-out 400ms ease-in forwards;
+}
+
+.toast.error {
   color: var(--danger);
 }
 
-.status-banner.success {
+.toast.success {
   color: var(--success);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+
+  .toast.leaving {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 .landing-hero {
@@ -658,18 +705,25 @@ th {
   min-height: 100%;
 }
 
-.inline-popover {
-  position: absolute;
-  top: 72px;
-  left: clamp(8px, 16%, 250px);
-  /* Wider than the v2 popover: it now hosts the Jira story list too. */
-  width: min(440px, calc(100% - 16px));
-  background: rgba(255, 255, 255, 0.98);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.2);
-  z-index: 10;
-  padding: 12px;
+/* Quick edit is a real modal: as an in-row absolute element it stretched the
+   timeline grid and scrolled with the chart. Sits under the story picker's
+   z-index 40 so a picker opened from here stacks on top. */
+.inline-modal-backdrop {
+  z-index: 30;
+}
+
+.inline-modal {
+  width: min(520px, 100%);
+  max-height: 85vh;
+  /* Wheeling the story list must not scroll the timeline behind it. */
+  overscroll-behavior: contain;
+  gap: 12px;
+}
+
+/* The compact chip strip was clamped for the old in-row popover; the modal is
+   wider, so story summaries can breathe. */
+.inline-modal .jira-task-links.compact .jira-chip-summary {
+  max-width: 260px;
 }
 
 .inline-grid {
@@ -693,6 +747,14 @@ th {
   background: white;
 }
 
+/* Sub-action of the Progress % field, not a form-level button. */
+.recalc-progress {
+  justify-self: start;
+  margin-top: 6px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+}
+
 @media (max-width: 1100px) {
   .hero,
   .main-grid,
@@ -710,8 +772,11 @@ th {
     padding: 18px;
   }
 
-  .status-banner {
-    margin: 18px;
+  .toast {
+    top: 12px;
+    right: 12px;
+    left: 12px;
+    max-width: none;
   }
 
   .summary-grid {
