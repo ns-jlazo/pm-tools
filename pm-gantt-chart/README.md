@@ -18,7 +18,7 @@ Internal product and program management tool aligned to:
 - Optional "Show Jira stories" timeline overlay with each story's Jira
   relationships (blocks / is blocked by / relates to / subtasks)
 
-"Project deliverables" encompass project features and enhancements — the concept
+"Project deliverables" include project features and enhancements — the concept
 was called "tasks" through V2.
 
 ## Run locally

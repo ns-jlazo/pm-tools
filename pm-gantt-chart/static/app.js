@@ -746,9 +746,9 @@ function JiraProjectPanel({ projectId, teams, onMessage, statusFilter, onEpicsLo
     <article className="panel jira-panel">
       <div className="jira-panel-header">
         <div>
-          <h2>Jira epics</h2>
+          <h2>Link Teams to Jira Work Items</h2>
           <p className="panel-copy">
-            Link Jira epics to this project. Stories under each epic are visible in a read-only list.
+            Link Jira epics & stories to identified teams. Stories under each epic are visible in a read-only list.
           </p>
         </div>
         <div className="actions">
@@ -2192,7 +2192,7 @@ function WorkspaceView({
         <article className="panel">
           <h2>Create deliverable</h2>
           <p className="panel-copy">
-            Project deliverables encompass project features and enhancements. Create them beneath the
+            Project deliverables include project features and enhancements. Create them beneath the
             timeline so review stays chart-first.
           </p>
           <${DeliverableForm}

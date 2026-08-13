@@ -69,7 +69,7 @@ python3 scripts/jira-search.py "project = <PROJECTKEY> AND issuetype = Epic ORDE
 
 In the UI:
 1. Open a project workspace.
-2. Scroll to the **Jira epics** panel.
+2. Scroll to the **Link Teams to Jira Work Items** panel.
 3. Click **Link epic**.
 4. Choose a team (optional) so the epic is grouped under that team's row.
 5. Either search with a keyword / JQL, or paste an epic key on the "Search by Jira Ticket ID" tab.
@@ -109,7 +109,7 @@ curl -sX POST http://localhost:8001/api/deliverables/17/jira/links \
 ## Step 5 — Refresh cached data
 
 - Cached issue metadata (status, summary, assignee, due date) is refreshed on-load once older than `JIRA_SYNC_TTL_SECONDS`.
-- Click **Refresh** in the Jira epics panel to force a project-wide sync.
+- Click **Refresh** in the **Link Teams to Jira Work Items** panel to force a project-wide sync.
 - Or hit `POST /api/projects/{id}/jira/sync`.
 
 ## Step 6 — See stories under a linked epic
