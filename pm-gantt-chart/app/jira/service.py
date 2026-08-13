@@ -318,6 +318,22 @@ def _quote_jql(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _unquote_jql(value: str) -> str:
+    """Undo Jira's JQL quoting of an autocomplete `value`.
+
+    Jira returns suggestion values ready to paste into JQL, so a label that
+    needs quoting comes back wrapped and escaped — `"#cap-upsize"` or
+    `"\\"cap-review\\""`. Handing that straight back to `labels = "..."` searches
+    for a label whose name contains the quotes, which never matches anything.
+    """
+    cleaned = (value or "").strip()
+    if len(cleaned) >= 2 and cleaned.startswith('"') and cleaned.endswith('"'):
+        # Unwrap once only: `"\"cap-review\""` is a label whose name really does
+        # contain quotes, and `_quote_jql` re-escapes it on the way back out.
+        cleaned = cleaned[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    return cleaned.strip()
+
+
 def _labels_from_issues(client: JiraClient, project_key: str, prefix: str) -> List[str]:
     """Derive labels actually in use in `project_key` from recent issues."""
     jql = (
@@ -360,7 +376,7 @@ def suggest_labels(
     lowered = prefix.lower()
     labels = []
     for item in payload.get("results") or []:
-        value = (item or {}).get("value") or ""
+        value = _unquote_jql((item or {}).get("value") or "")
         if value and lowered in value.lower() and value not in labels:
             labels.append(value)
     return schemas.JiraLabelSuggestions(
@@ -372,7 +388,9 @@ def search_by_label(
     label: str, project_key: Optional[str] = None, limit: int = 100
 ) -> schemas.JiraLabelSearchResponse:
     """Every issue in `project_key` carrying `label`, newest first."""
-    cleaned = (label or "").strip()
+    # A label picked from the typeahead before it started unquoting — or pasted
+    # out of a JQL snippet — arrives wrapped in quotes; search for the name.
+    cleaned = _unquote_jql(label or "")
     if not cleaned:
         raise ValueError("A Jira label is required.")
     key = label_project_key(project_key)

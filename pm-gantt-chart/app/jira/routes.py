@@ -19,6 +19,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["jira"])
 
 
+def _jira_error_messages(exc: requests.HTTPError) -> str:
+    """Pull Jira's own complaint out of an error response body.
+
+    Jira answers a rejected search with `{"errorMessages": [...], "errors": {...}}`
+    — e.g. why a JQL string would not parse. Without this the client only ever
+    sees "502 Jira error: 400 Client Error", which says nothing actionable.
+    """
+    response = exc.response
+    if response is None:
+        return ""
+    try:
+        payload = response.json()
+    except ValueError:
+        return (response.text or "").strip()[:300]
+    if not isinstance(payload, dict):
+        return ""
+    parts = [str(item) for item in payload.get("errorMessages") or [] if item]
+    errors = payload.get("errors")
+    if isinstance(errors, dict):
+        parts.extend(f"{field}: {message}" for field, message in errors.items())
+    return " ".join(parts).strip()[:300]
+
+
 def _handle_jira_call(func, *args, **kwargs):
     """Uniform mapping of Jira/service errors to HTTP responses."""
     try:
@@ -27,6 +50,7 @@ def _handle_jira_call(func, *args, **kwargs):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else 502
+        detail = _jira_error_messages(exc)
         if status in (401, 403):
             raise HTTPException(
                 status_code=502,
@@ -34,7 +58,28 @@ def _handle_jira_call(func, *args, **kwargs):
             ) from exc
         if status == 404:
             raise HTTPException(status_code=404, detail="Jira issue not found.") from exc
-        raise HTTPException(status_code=502, detail=f"Jira error: {exc}") from exc
+        if status == 400:
+            # Jira turned the query down (bad JQL, unknown project key): the
+            # caller can fix it, so report it as a client error with the reason.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Jira rejected the query: {detail}"
+                    if detail
+                    else "Jira rejected the query."
+                ),
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Jira error ({status}): {detail}" if detail else f"Jira error: {exc}"
+            ),
+        ) from exc
+    except requests.RequestException as exc:
+        # Timeouts, DNS and connection resets are not HTTPError, so without this
+        # they escaped as an opaque 500 and the UI showed "Request failed".
+        logger.warning("Jira request failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Could not reach Jira: {exc}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

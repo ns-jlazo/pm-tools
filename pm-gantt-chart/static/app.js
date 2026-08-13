@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
 import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
+import { createPortal } from "https://esm.sh/react-dom@18.3.1";
 import htm from "https://esm.sh/htm@3.1.1";
 
 // htm passes '' for <> fragments; React 18 requires React.Fragment
@@ -37,7 +38,11 @@ function api(path, options = {}) {
   }).then(async (response) => {
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.detail || "Request failed");
+      // A non-JSON body (proxy error, unhandled server crash) leaves us with
+      // nothing to show, so fall back to the status instead of "Request failed".
+      throw new Error(
+        payload.detail || `Request failed: ${response.status} ${response.statusText}`.trim()
+      );
     }
     if (response.status === 204) {
       return null;
@@ -85,6 +90,14 @@ async function jiraTrouble() {
     return `Could not reach the Jira health check: ${err.message}`;
   }
   return "";
+}
+
+// Report what failed *and* whether Jira itself is the reason. `jiraTrouble`
+// alone used to replace the real error, hiding e.g. a rejected JQL string.
+async function describeJiraFailure(err) {
+  const reason = (err && err.message) || "The request failed.";
+  const trouble = await jiraTrouble();
+  return trouble ? `${reason} (${trouble})` : reason;
 }
 
 function jiraStatusClass(category) {
@@ -244,7 +257,22 @@ function JiraPickerModal({
   const [labelOptions, setLabelOptions] = useState([]);
   const [labelResult, setLabelResult] = useState(null);
   const [labelSearching, setLabelSearching] = useState(false);
+  const [labelHint, setLabelHint] = useState("");
   const alreadyLinked = new Set(linkedKeys || []);
+
+  // Every search in here runs on a submit event, and one caller (the create
+  // deliverable panel) renders this modal from inside its own <form>. Chrome
+  // does not bubble a nested form's submit event out to React's delegated
+  // listener, so onSubmit never fired, nothing called preventDefault, and the
+  // browser did a native GET that reloaded the app back to the landing page.
+  // The modal is portalled out of the DOM tree below, which fixes the native
+  // event; stopPropagation keeps the *synthetic* event — which still travels up
+  // the React tree, portal or not — from also submitting that outer form.
+  const takeOver = (event) => {
+    if (!event) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
 
   // Debounced label typeahead. The endpoint also reports the project it scoped
   // to, which seeds the editable project-key box on first load.
@@ -257,16 +285,20 @@ function JiraPickerModal({
             `&project_key=${encodeURIComponent(labelProjectKey.trim())}`
         );
         setLabelOptions(payload.labels || []);
+        setLabelHint("");
         if (!labelProjectKey && payload.project_key) setLabelProjectKey(payload.project_key);
       } catch (err) {
+        // Suggestions are a convenience, so this must not block the search —
+        // but say so, otherwise an empty dropdown looks like "no such label".
         setLabelOptions([]);
+        setLabelHint(`Label suggestions unavailable (${err.message}) — type the exact label.`);
       }
     }, 300);
     return () => window.clearTimeout(handle);
   }, [mode, label, labelProjectKey]);
 
   const runLabelSearch = async (event) => {
-    if (event) event.preventDefault();
+    takeOver(event);
     const cleaned = label.trim();
     if (!cleaned) {
       setError("Pick or type a Jira label to search.");
@@ -281,9 +313,17 @@ function JiraPickerModal({
       );
       setLabelResult(payload);
       if (statusFilter) statusFilter.registerStatuses(payload.issues || []);
-      if (!(payload.issues || []).length) setError(await jiraTrouble());
+      if (!(payload.issues || []).length) {
+        // A healthy Jira plus zero rows used to clear the error and say nothing.
+        // The usual cause is a label that lives in another Jira project.
+        setError(
+          (await jiraTrouble()) ||
+            `No issues in Jira project ${payload.project_key} carry the label “${payload.label}”. ` +
+              `Check the spelling, or change the Jira project if the label belongs to a different one.`
+        );
+      }
     } catch (err) {
-      setError((await jiraTrouble()) || err.message);
+      setError(await describeJiraFailure(err));
       setLabelResult(null);
     } finally {
       setLabelSearching(false);
@@ -324,7 +364,7 @@ function JiraPickerModal({
   }, [mode]);
 
   const runSearch = async (event) => {
-    if (event) event.preventDefault();
+    takeOver(event);
     const trimmedJql = jql.trim();
     const trimmedKeyword = keyword.trim();
     let query = trimmedJql;
@@ -349,7 +389,7 @@ function JiraPickerModal({
       setSearched(true);
       if (!issues.length) setError(await jiraTrouble());
     } catch (err) {
-      setError((await jiraTrouble()) || err.message);
+      setError(await describeJiraFailure(err));
       setResults([]);
       setSearched(true);
     } finally {
@@ -358,7 +398,7 @@ function JiraPickerModal({
   };
 
   const validateKey = async (event) => {
-    if (event) event.preventDefault();
+    takeOver(event);
     const key = keyInput.trim().toUpperCase();
     if (!key) {
       setError("Paste a Jira key like ABC-123.");
@@ -370,7 +410,7 @@ function JiraPickerModal({
       const issue = await api(`/api/jira/issues/${encodeURIComponent(key)}`);
       setPickedIssue(issue);
     } catch (err) {
-      setError((await jiraTrouble()) || err.message);
+      setError(await describeJiraFailure(err));
       setPickedIssue(null);
     } finally {
       setSearching(false);
@@ -385,7 +425,11 @@ function JiraPickerModal({
     onLink(payload);
   };
 
-  return html`
+  // Portalled to <body>: the backdrop is position: fixed anyway, and mounting
+  // it outside the caller's markup keeps the picker's own forms from ever
+  // becoming nested forms (see `takeOver`).
+  return createPortal(
+    html`
     <div className="jira-modal-backdrop" role="dialog" aria-modal="true" onClick=${onClose}>
       <div className="jira-modal" onClick=${(event) => event.stopPropagation()}>
         <header className="jira-modal-header">
@@ -543,6 +587,7 @@ function JiraPickerModal({
                   <span className="help-text">
                     Optional — labels tag the stories that make up one project feature.
                   </span>
+                  ${labelHint ? html`<span className="help-text">${labelHint}</span>` : null}
                 </div>
                 <div className="field">
                   <label htmlFor="jira-label-project">Jira project</label>
@@ -552,6 +597,9 @@ function JiraPickerModal({
                     value=${labelProjectKey}
                     onInput=${(event) => setLabelProjectKey(event.target.value)}
                   />
+                  <span className="help-text">
+                    Only stories in this Jira project are searched.
+                  </span>
                 </div>
                 <div className="actions">
                   <button className="button-secondary" type="submit" disabled=${labelSearching}>
@@ -736,7 +784,9 @@ function JiraPickerModal({
         ${error ? html`<div className="jira-modal-error">${error}</div>` : null}
       </div>
     </div>
-  `;
+  `,
+    document.body
+  );
 }
 
 function JiraEpicChildren({ epicKey, statusFilter }) {

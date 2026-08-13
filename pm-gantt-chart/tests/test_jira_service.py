@@ -11,9 +11,12 @@ import requests
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from fastapi import HTTPException
+
 from app import models, schemas
 from app.database import Base
 from app.env import load_dotenv
+from app.jira import routes as jira_routes
 from app.jira import service as jira_service
 from app.jira.auth import JiraNotConfigured
 
@@ -313,6 +316,35 @@ class JiraLabelTests(unittest.TestCase):
         self.assertEqual(suggestions.project_key, "SNA")
         self.assertEqual(self.fake.label_calls, ["pay"])
 
+    def test_suggest_labels_unquotes_jql_ready_values(self) -> None:
+        # Jira hands back values ready to paste into JQL, so anything needing
+        # quotes arrives wrapped. Passing that through searched for a label
+        # whose name contained the quote characters, which matches nothing.
+        self.fake.label_payload = {
+            "results": [
+                {"value": '"#pay-upsize"'},
+                {"value": '"\\"pay-review\\""'},
+                {"value": "payments-v2"},
+            ]
+        }
+
+        suggestions = jira_service.suggest_labels(query="pay")
+
+        self.assertEqual(
+            suggestions.labels, ["#pay-upsize", '"pay-review"', "payments-v2"]
+        )
+
+    def test_search_by_label_strips_jql_quoting_from_the_label(self) -> None:
+        self.fake.add("SNA-1", labels=["#pay-upsize"])
+
+        response = jira_service.search_by_label('"#pay-upsize"')
+
+        self.assertEqual(response.label, "#pay-upsize")
+        self.assertEqual(
+            self.fake.search_calls,
+            ['project = "SNA" AND labels = "#pay-upsize" ORDER BY updated DESC'],
+        )
+
     def test_suggest_labels_falls_back_to_project_issues(self) -> None:
         response = mock.Mock(status_code=404)
         self.fake.label_error = requests.HTTPError(response=response)
@@ -327,6 +359,91 @@ class JiraLabelTests(unittest.TestCase):
         self.assertIn(
             'project = "SNA" AND labels IS NOT EMPTY', self.fake.search_calls[0]
         )
+
+
+class JiraErrorMappingTests(unittest.TestCase):
+    """Every Jira failure has to reach the UI as something a PM can act on."""
+
+    @staticmethod
+    def _raise(exc: Exception) -> Any:
+        def call() -> Any:
+            raise exc
+
+        return call
+
+    def _status_and_detail(self, exc: Exception) -> Any:
+        with self.assertRaises(HTTPException) as caught:
+            jira_routes._handle_jira_call(self._raise(exc))
+        return caught.exception.status_code, caught.exception.detail
+
+    @staticmethod
+    def _http_error(status: int, payload: Any = None, text: str = "") -> requests.HTTPError:
+        response = mock.Mock(status_code=status, text=text)
+        if payload is None:
+            response.json.side_effect = ValueError("no json")
+        else:
+            response.json.return_value = payload
+        return requests.HTTPError(f"{status} Client Error", response=response)
+
+    def test_rejected_query_reports_jiras_own_reason(self) -> None:
+        # A 400 is the caller's problem, and only Jira knows why.
+        status, detail = self._status_and_detail(
+            self._http_error(400, {"errorMessages": ["Field 'labels' is invalid."]})
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("Field 'labels' is invalid.", detail)
+
+    def test_field_errors_are_included(self) -> None:
+        status, detail = self._status_and_detail(
+            self._http_error(400, {"errorMessages": [], "errors": {"jql": "bad syntax"}})
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("jql: bad syntax", detail)
+
+    def test_server_side_jira_failure_is_a_bad_gateway(self) -> None:
+        status, detail = self._status_and_detail(
+            self._http_error(500, {"errorMessages": ["Internal Jira error"]})
+        )
+
+        self.assertEqual(status, 502)
+        self.assertIn("Internal Jira error", detail)
+
+    def test_non_json_error_body_still_says_something(self) -> None:
+        status, detail = self._status_and_detail(
+            self._http_error(503, text="<html>Gateway timeout</html>")
+        )
+
+        self.assertEqual(status, 502)
+        self.assertIn("Gateway timeout", detail)
+
+    def test_connection_failures_do_not_escape_as_a_500(self) -> None:
+        # ConnectionError/Timeout are not HTTPError, so they used to fall through
+        # as an opaque 500 that the UI showed as "Request failed".
+        status, detail = self._status_and_detail(
+            requests.ConnectionError("Failed to resolve netskope.atlassian.net")
+        )
+
+        self.assertEqual(status, 502)
+        self.assertIn("Could not reach Jira", detail)
+
+    def test_timeout_is_reported_as_unreachable(self) -> None:
+        status, detail = self._status_and_detail(requests.Timeout("read timed out"))
+
+        self.assertEqual(status, 502)
+        self.assertIn("Could not reach Jira", detail)
+
+    def test_missing_config_is_service_unavailable(self) -> None:
+        status, _ = self._status_and_detail(JiraNotConfigured("JIRA_URL is not set."))
+
+        self.assertEqual(status, 503)
+
+    def test_bad_credentials_name_the_env_vars(self) -> None:
+        status, detail = self._status_and_detail(self._http_error(401))
+
+        self.assertEqual(status, 502)
+        self.assertIn("JIRA_API_TOKEN", detail)
 
 
 class JiraAuthTests(unittest.TestCase):
