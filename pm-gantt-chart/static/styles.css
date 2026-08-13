@@ -89,10 +89,6 @@ button {
 }
 
 .hero {
-  display: grid;
-  grid-template-columns: 1.4fr 1fr;
-  gap: 24px;
-  align-items: stretch;
   margin-bottom: 24px;
 }
 
@@ -150,6 +146,19 @@ button {
   max-width: 60ch;
   color: var(--muted);
   font-size: 1.05rem;
+  white-space: pre-wrap;
+}
+
+.task-description {
+  white-space: pre-wrap;
+}
+
+.hero-copy a,
+.task-description a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
 }
 
 .hero-meta {
@@ -170,9 +179,24 @@ button {
   font-weight: 600;
 }
 
-.hero-side {
+/* Stat buttons live inside the hero card; `position: relative` keeps them above
+   the decorative `.hero-card::after` circle. */
+.hero-stats {
+  position: relative;
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+  margin-top: 24px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+}
+
+/* Softer than a standalone summary card so the hero doesn't read as cards
+   nested inside a card. */
+.hero-stats .summary-card {
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: none;
+  border-radius: 18px;
 }
 
 .summary-grid {
@@ -756,14 +780,9 @@ th {
 }
 
 @media (max-width: 1100px) {
-  .hero,
   .main-grid,
   .summary-grid {
     grid-template-columns: 1fr;
-  }
-
-  .hero-side {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -784,7 +803,7 @@ th {
   }
 
   .form-grid,
-  .hero-side,
+  .hero-stats,
   .workspace-panels {
     grid-template-columns: 1fr;
   }

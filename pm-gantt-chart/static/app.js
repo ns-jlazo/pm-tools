@@ -1366,6 +1366,68 @@ function flashScrollTarget(targetId) {
   window.setTimeout(() => node.classList.remove("scroll-flash"), 1400);
 }
 
+// Descriptions are free text from a textarea: author line breaks survive via
+// `white-space: pre-wrap` in styles.css, and [label](url) / bare http(s) URLs
+// become real anchors. Elements are constructed, not HTML-injected, so pasted
+// markup can never execute.
+const RICH_LINK_PATTERN = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)/g;
+
+// A URL that ends a sentence or sits in parentheses picks up characters that
+// are punctuation, not part of the link.
+function trimUrlTail(url) {
+  let href = url;
+  while (href.length > 1) {
+    const last = href[href.length - 1];
+    if (".,;:!?".includes(last)) {
+      href = href.slice(0, -1);
+      continue;
+    }
+    const opens = (href.match(/\(/g) || []).length;
+    const closes = (href.match(/\)/g) || []).length;
+    if (last === ")" && closes > opens) {
+      href = href.slice(0, -1);
+      continue;
+    }
+    break;
+  }
+  return href;
+}
+
+function RichText({ text }) {
+  const source = typeof text === "string" ? text : "";
+  const nodes = [];
+  const pattern = new RegExp(RICH_LINK_PATTERN.source, "g");
+  let cursor = 0;
+  let match = pattern.exec(source);
+  while (match) {
+    if (match.index > cursor) {
+      nodes.push(source.slice(cursor, match.index));
+    }
+    const [raw, mdLabel, mdHref, bareUrl] = match;
+    let href = mdHref;
+    let label = mdLabel;
+    let consumed = raw.length;
+    if (!href) {
+      href = trimUrlTail(bareUrl);
+      label = href;
+      consumed = href.length;
+    }
+    nodes.push(html`
+      <a key=${`link-${match.index}`} href=${href} target="_blank" rel="noopener noreferrer">${label}</a>
+    `);
+    cursor = match.index + consumed;
+    pattern.lastIndex = cursor;
+    match = pattern.exec(source);
+  }
+  if (cursor < source.length) {
+    nodes.push(source.slice(cursor));
+  }
+  return html`<>${nodes}</>`;
+}
+
+const DESCRIPTION_HINT =
+  "Line breaks are kept. Paste a URL to link it, or write [label](https://…) for a named link.";
+
 function ProjectCard({ project, onOpenProject }) {
   return html`
     <article
@@ -1466,7 +1528,8 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
             </div>
             <div className="field-wide">
               <label htmlFor="project-description">Description</label>
-              <textarea id="project-description" value=${projectForm.description} onInput=${(event) => setProjectForm({ ...projectForm, description: event.target.value })}></textarea>
+              <textarea id="project-description" rows="6" value=${projectForm.description} onInput=${(event) => setProjectForm({ ...projectForm, description: event.target.value })}></textarea>
+              <span className="help-text">${DESCRIPTION_HINT}</span>
             </div>
             <div className="field">
               <label htmlFor="project-color">Accent color</label>
@@ -1718,7 +1781,8 @@ function DeliverableForm({
 
         <div className="field-wide">
           <label htmlFor=${`${submitLabel}-description`}>Description</label>
-          <textarea id=${`${submitLabel}-description`} value=${form.description} onInput=${handleField("description")}></textarea>
+          <textarea id=${`${submitLabel}-description`} rows="6" value=${form.description} onInput=${handleField("description")}></textarea>
+          <span className="help-text">${DESCRIPTION_HINT}</span>
         </div>
       </div>
 
@@ -2003,7 +2067,7 @@ function GanttRow({
     <div className="gantt-row">
       <div className="task-cell">
         <strong>${deliverable.title}</strong>
-        <div>${deliverable.description}</div>
+        <div className="task-description"><${RichText} text=${deliverable.description} /></div>
         <div className="task-meta">
           <span className="tiny-pill">${humanizeStatus(deliverable.status)}</span>
           <span className="tiny-pill">Plan: ${formatDisplayDate(deliverable.planned_start)} - ${formatDisplayDate(deliverable.planned_end)}</span>
@@ -2571,9 +2635,11 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
               <label htmlFor="project-edit-description">Description</label>
               <textarea
                 id="project-edit-description"
+                rows="6"
                 value=${draft.description}
                 onInput=${(event) => setDraft({ ...draft, description: event.target.value })}
               ></textarea>
+              <span className="help-text">${DESCRIPTION_HINT}</span>
             </div>
             <div className="field-wide">
               <label className="checkbox-field" htmlFor="project-edit-is-example">
@@ -2764,33 +2830,35 @@ function WorkspaceView({
               title="Edit workspace"
             ><${PencilIcon} /></button>
           </div>
-          <p className="hero-copy">${dashboard.project.description || "No description yet."}</p>
-        </div>
-        <div className="hero-side">
-          <${SummaryCard}
-            label="Teams"
-            value=${dashboard.summary.total_teams}
-            emphasis="Manage project teams"
-            onActivate=${() => setTeamDrawerOpen(true)}
-          />
-          <${SummaryCard}
-            label="Deliverables"
-            value=${dashboard.summary.total_deliverables}
-            emphasis="Jump to the timeline"
-            onActivate=${() => flashScrollTarget("gantt-section")}
-          />
-          <${SummaryCard}
-            label="At risk"
-            value=${dashboard.summary.at_risk_deliverables}
-            emphasis="Open the risk register"
-            onActivate=${() => flashScrollTarget("risk-register")}
-          />
-          <${SummaryCard}
-            label="Delayed"
-            value=${dashboard.summary.delayed_deliverables}
-            emphasis="Jump to the timeline"
-            onActivate=${() => flashScrollTarget("gantt-section")}
-          />
+          <p className="hero-copy">
+            <${RichText} text=${dashboard.project.description || "No description yet."} />
+          </p>
+          <div className="hero-stats">
+            <${SummaryCard}
+              label="Teams"
+              value=${dashboard.summary.total_teams}
+              emphasis="Manage project teams"
+              onActivate=${() => setTeamDrawerOpen(true)}
+            />
+            <${SummaryCard}
+              label="Deliverables"
+              value=${dashboard.summary.total_deliverables}
+              emphasis="Jump to the timeline"
+              onActivate=${() => flashScrollTarget("gantt-section")}
+            />
+            <${SummaryCard}
+              label="At risk"
+              value=${dashboard.summary.at_risk_deliverables}
+              emphasis="Open the risk register"
+              onActivate=${() => flashScrollTarget("risk-register")}
+            />
+            <${SummaryCard}
+              label="Delayed"
+              value=${dashboard.summary.delayed_deliverables}
+              emphasis="Jump to the timeline"
+              onActivate=${() => flashScrollTarget("gantt-section")}
+            />
+          </div>
         </div>
       </section>
 
