@@ -1530,6 +1530,70 @@ th {
   gap: 8px;
 }
 
+.contrib-chip .help-text {
+  font-size: 0.72rem;
+  opacity: 0.85;
+}
+
+/* ---------------- Real vs. example workspace sections ---------------- */
+
+.project-section {
+  margin-bottom: 24px;
+}
+
+.project-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.project-section-heading h2 {
+  margin: 0;
+}
+
+.project-section .panel-copy {
+  margin: 4px 0 14px;
+}
+
+.project-section.examples .project-card {
+  background: rgba(255, 255, 255, 0.62);
+}
+
+/* Dashed edge so "example" reads at a glance, not just from the pill. */
+.project-card.example {
+  border: 1px dashed rgba(30, 41, 59, 0.28);
+  box-shadow: none;
+}
+
+.project-example-pill {
+  background: rgba(30, 41, 59, 0.1);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.68rem;
+  margin-left: auto;
+}
+
+/* Checkboxes must escape the full-width text-input rule in .field/.field-wide. */
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.checkbox-field input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.jira-label-summary {
+  margin-top: 4px;
+}
+
 @media (max-width: 900px) {
   .workspace-panels {
     grid-template-columns: 1fr;

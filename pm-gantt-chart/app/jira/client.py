@@ -196,6 +196,18 @@ class JiraClient:
         """
         return self._get("/rest/api/3/myself")
 
+    def get_label_suggestions(self, prefix: str = "") -> Dict[str, Any]:
+        """Label typeahead from Jira's JQL autocomplete.
+
+        Returns `{"results": [{"value", "displayName"}, ...]}`. Suggestions are
+        tenant-wide — Jira has no per-project label endpoint — so callers that
+        need a project scope must filter or fall back to a scoped JQL search.
+        """
+        return self._get(
+            "/rest/api/3/jql/autocompletedata/suggestions",
+            params={"fieldName": "labels", "fieldValue": prefix},
+        )
+
     def get_issue(self, key: str, fields: Optional[Iterable[str]] = None) -> Dict[str, Any]:
         params: Dict[str, Any] = {}
         if fields:

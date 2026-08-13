@@ -9,12 +9,14 @@ class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     description: str = ""
     color: str = Field(default="#0f766e", min_length=4, max_length=20)
+    is_example: bool = False
 
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=160)
     description: Optional[str] = None
     color: Optional[str] = Field(default=None, min_length=4, max_length=20)
+    is_example: Optional[bool] = None
 
 
 class ProjectRead(ProjectCreate):
@@ -28,6 +30,7 @@ class ProjectCard(BaseModel):
     name: str
     description: str
     color: str
+    is_example: bool = False
     total_deliverables: int
     delayed_deliverables: int
     at_risk_deliverables: int
@@ -184,6 +187,34 @@ class JiraIssueRead(JiraSearchResult):
 class JiraLinkCreate(BaseModel):
     jira_key: str = Field(min_length=1, max_length=60)
     team_id: Optional[int] = None
+
+
+class JiraBulkLinkCreate(BaseModel):
+    """Link every story carrying a Jira label in one request."""
+
+    jira_keys: List[str] = Field(default_factory=list)
+
+
+class JiraBulkLinkResult(BaseModel):
+    linked: List[str] = Field(default_factory=list)
+    skipped: List[str] = Field(default_factory=list)
+    not_found: List[str] = Field(default_factory=list)
+
+
+class JiraLabelSuggestions(BaseModel):
+    """Label typeahead results, scoped to one Jira project."""
+
+    project_key: str
+    labels: List[str] = Field(default_factory=list)
+    # "suggestions" (Jira's autocomplete endpoint) or "issues" (derived fallback).
+    source: str = "suggestions"
+
+
+class JiraLabelSearchResponse(BaseModel):
+    project_key: str
+    label: str
+    issues: List[JiraSearchResult] = Field(default_factory=list)
+    truncated: bool = False
 
 
 class ProjectJiraLinkRead(BaseModel):

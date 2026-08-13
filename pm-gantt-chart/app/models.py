@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import (
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -43,6 +45,10 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     color: Mapped[str] = mapped_column(String(20), default="#0f766e", nullable=False)
+    # Example workspaces are guidance/demo material, listed apart from real work.
+    is_example: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("0")
+    )
 
     teams: Mapped[List["Team"]] = relationship(
         "Team", back_populates="project", cascade="all, delete-orphan"

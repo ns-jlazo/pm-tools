@@ -1,10 +1,10 @@
-"""Coverage for the in-place `task*` → `deliverable*` schema rename."""
+"""Coverage for the in-place startup schema migrations."""
 
 import unittest
 
 from sqlalchemy import create_engine, inspect, text
 
-from app.main import _migrate_deliverable_rename
+from app.main import _migrate_deliverable_rename, _migrate_example_flag
 
 
 # The v2 schema as it shipped before the deliverable rename, trimmed to the
@@ -182,3 +182,83 @@ class DeliverableRenameMigrationTests(unittest.TestCase):
         _migrate_deliverable_rename(self.engine)
 
         self.assertEqual(set(inspect(self.engine).get_table_names()), {"projects"})
+
+
+class ExampleFlagMigrationTests(unittest.TestCase):
+    """`projects.is_example` is added in place; create_all never adds columns."""
+
+    def setUp(self) -> None:
+        self.engine = create_engine(
+            "sqlite:///:memory:", connect_args={"check_same_thread": False}
+        )
+
+    def tearDown(self) -> None:
+        self.engine.dispose()
+
+    def _build_projects(self, *names: str) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(text(_LEGACY_DDL[0]))  # projects without is_example
+            for index, name in enumerate(names, start=1):
+                connection.execute(
+                    text(
+                        "INSERT INTO projects VALUES "
+                        "(:id, :name, '', '#0f766e')"
+                    ),
+                    {"id": index, "name": name},
+                )
+
+    def _flags(self) -> dict:
+        with self.engine.begin() as connection:
+            rows = connection.execute(
+                text("SELECT name, is_example FROM projects ORDER BY id")
+            ).all()
+        return {name: flag for name, flag in rows}
+
+    def test_adds_column_and_flags_only_the_named_workspaces(self) -> None:
+        self._build_projects(
+            "Atlas API Expansion",
+            "Phoenix Retail Refresh",
+            "V2 Smoke Project",
+            "Real Customer Work",
+        )
+
+        _migrate_example_flag(self.engine)
+
+        columns = {c["name"] for c in inspect(self.engine).get_columns("projects")}
+        self.assertIn("is_example", columns)
+        self.assertEqual(
+            self._flags(),
+            {
+                "Atlas API Expansion": 1,
+                "Phoenix Retail Refresh": 1,
+                "V2 Smoke Project": 1,
+                "Real Customer Work": 0,
+            },
+        )
+
+    def test_second_run_is_a_no_op(self) -> None:
+        self._build_projects("Atlas API Expansion", "Real Customer Work")
+
+        _migrate_example_flag(self.engine)
+        _migrate_example_flag(self.engine)  # must not raise
+
+        self.assertEqual(
+            self._flags(), {"Atlas API Expansion": 1, "Real Customer Work": 0}
+        )
+
+    def test_does_not_re_promote_a_demoted_workspace(self) -> None:
+        self._build_projects("Atlas API Expansion")
+
+        _migrate_example_flag(self.engine)
+        # The user demotes it in the Edit-workspace drawer.
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE projects SET is_example = 0"))
+
+        _migrate_example_flag(self.engine)
+
+        self.assertEqual(self._flags(), {"Atlas API Expansion": 0})
+
+    def test_no_ops_when_projects_table_is_absent(self) -> None:
+        _migrate_example_flag(self.engine)  # must not raise
+
+        self.assertEqual(set(inspect(self.engine).get_table_names()), set())

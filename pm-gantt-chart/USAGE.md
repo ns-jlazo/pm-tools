@@ -68,6 +68,16 @@ On first startup, the database schema is created and sample seed data is loaded 
 
 The default view lists all projects as cards. Each card shows the project name, description, and summary counts (tasks, teams, at-risk, delayed).
 
+Cards are grouped into two sections:
+
+- **Active project workspaces** — real project work.
+- **Example workspaces** — reference layouts, safe to experiment in. They carry an
+  `Example` pill and a dashed border. The seeded sample projects start here.
+
+Tick **This is an example workspace** in the *Onboard new project* panel to file a new
+workspace under Examples; the same checkbox in the edit panel moves an existing
+workspace between the two sections later.
+
 Click any project card to open its workspace.
 
 ### Project Workspace
@@ -115,7 +125,10 @@ Click **New Project** on the portfolio page and fill in the name and description
 Inside a project workspace, use the forms in the lower section to:
 
 - **Add a team** — enter a team name.
-- **Add a task** — fill in title, team, dates, status, and optional dependencies (comma-separated task titles).
+- **Add a task** — fill in title, team, dates, and status. **Upstream dependencies** lists
+  the project's other deliverables as toggle chips (title plus planned window); click the
+  ones this work waits on. On a brand-new project it says so instead of showing an empty
+  box. Dependencies are always on other deliverables, not on Jira issues.
 
 ### Bulk Import via CSV
 

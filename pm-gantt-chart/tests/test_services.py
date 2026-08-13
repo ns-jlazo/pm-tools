@@ -228,5 +228,67 @@ class ProjectMutationTests(unittest.TestCase):
         self.assertEqual(len(list(self.db.scalars(select(models.JiraIssue)).all())), 2)
 
 
+class ExampleWorkspaceFlagTests(unittest.TestCase):
+    """The landing page splits sections on `is_example`, so it has to round-trip."""
+
+    def setUp(self) -> None:
+        self.engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=self.engine)
+        self.session_maker = sessionmaker(bind=self.engine)
+        self.db: Session = self.session_maker()
+
+    def tearDown(self) -> None:
+        self.db.close()
+        Base.metadata.drop_all(bind=self.engine)
+        self.engine.dispose()
+
+    def test_create_honors_the_flag_and_defaults_to_real(self) -> None:
+        example = services.create_project(
+            self.db, schemas.ProjectCreate(name="Demo", description="", is_example=True)
+        )
+        real = services.create_project(
+            self.db, schemas.ProjectCreate(name="Customer Work", description="")
+        )
+
+        self.assertTrue(example.is_example)
+        self.assertFalse(real.is_example)
+
+    def test_update_can_demote_without_clobbering_other_fields(self) -> None:
+        project = services.create_project(
+            self.db,
+            schemas.ProjectCreate(
+                name="Demo", description="Guidance copy.", color="#1d4ed8", is_example=True
+            ),
+        )
+
+        services.update_project(self.db, project, schemas.ProjectUpdate(is_example=False))
+
+        self.assertFalse(project.is_example)
+        self.assertEqual(project.name, "Demo")
+        self.assertEqual(project.description, "Guidance copy.")
+        self.assertEqual(project.color, "#1d4ed8")
+
+    def test_update_leaves_the_flag_alone_when_omitted(self) -> None:
+        project = services.create_project(
+            self.db, schemas.ProjectCreate(name="Demo", description="", is_example=True)
+        )
+
+        services.update_project(self.db, project, schemas.ProjectUpdate(name="Demo v2"))
+
+        self.assertTrue(project.is_example)
+
+    def test_project_cards_surface_the_flag(self) -> None:
+        services.create_project(
+            self.db, schemas.ProjectCreate(name="Demo", description="", is_example=True)
+        )
+        services.create_project(
+            self.db, schemas.ProjectCreate(name="Customer Work", description="")
+        )
+
+        cards = {card.name: card.is_example for card in services.project_cards(self.db)}
+
+        self.assertEqual(cards, {"Demo": True, "Customer Work": False})
+
+
 if __name__ == "__main__":
     unittest.main()

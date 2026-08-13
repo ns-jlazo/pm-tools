@@ -10,7 +10,7 @@ const STATUS_OPTIONS = ["planned", "in_progress", "blocked", "done"];
 const ISSUE_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 const STATUS_FILTER_PREFIX = "pm-tool.jira-status-filter.";
 const GANTT_JIRA_PREFIX = "pm-tool.gantt-jira.";
-const DEFAULT_PROJECT = { name: "", description: "", color: "#0f766e" };
+const DEFAULT_PROJECT = { name: "", description: "", color: "#0f766e", is_example: false };
 const DEFAULT_DELIVERABLE = {
   title: "",
   description: "",
@@ -218,6 +218,7 @@ function JiraPickerModal({
   teams,
   onClose,
   onLink,
+  onLinkMany,
   submitting,
   error,
   setError,
@@ -226,6 +227,7 @@ function JiraPickerModal({
   linkedKeys,
 }) {
   const hasEpics = Boolean(epicKeys && epicKeys.length);
+  const canBulkLink = typeof onLinkMany === "function";
   const [mode, setMode] = useState(hasEpics ? "epics" : "search");
   const [jql, setJql] = useState("");
   const [keyword, setKeyword] = useState("");
@@ -237,7 +239,61 @@ function JiraPickerModal({
   const [searched, setSearched] = useState(false);
   const [epicGroups, setEpicGroups] = useState(null);
   const [loadingEpics, setLoadingEpics] = useState(false);
+  const [label, setLabel] = useState("");
+  const [labelProjectKey, setLabelProjectKey] = useState("");
+  const [labelOptions, setLabelOptions] = useState([]);
+  const [labelResult, setLabelResult] = useState(null);
+  const [labelSearching, setLabelSearching] = useState(false);
   const alreadyLinked = new Set(linkedKeys || []);
+
+  // Debounced label typeahead. The endpoint also reports the project it scoped
+  // to, which seeds the editable project-key box on first load.
+  useEffect(() => {
+    if (mode !== "label") return undefined;
+    const handle = window.setTimeout(async () => {
+      try {
+        const payload = await api(
+          `/api/jira/labels?query=${encodeURIComponent(label.trim())}` +
+            `&project_key=${encodeURIComponent(labelProjectKey.trim())}`
+        );
+        setLabelOptions(payload.labels || []);
+        if (!labelProjectKey && payload.project_key) setLabelProjectKey(payload.project_key);
+      } catch (err) {
+        setLabelOptions([]);
+      }
+    }, 300);
+    return () => window.clearTimeout(handle);
+  }, [mode, label, labelProjectKey]);
+
+  const runLabelSearch = async (event) => {
+    if (event) event.preventDefault();
+    const cleaned = label.trim();
+    if (!cleaned) {
+      setError("Pick or type a Jira label to search.");
+      return;
+    }
+    setError("");
+    setLabelSearching(true);
+    try {
+      const payload = await api(
+        `/api/jira/labels/issues?label=${encodeURIComponent(cleaned)}` +
+          `&project_key=${encodeURIComponent(labelProjectKey.trim())}&limit=100`
+      );
+      setLabelResult(payload);
+      if (statusFilter) statusFilter.registerStatuses(payload.issues || []);
+      if (!(payload.issues || []).length) setError(await jiraTrouble());
+    } catch (err) {
+      setError((await jiraTrouble()) || err.message);
+      setLabelResult(null);
+    } finally {
+      setLabelSearching(false);
+    }
+  };
+
+  const labelIssues = (labelResult && labelResult.issues) || [];
+  const labelVisible = statusFilter ? statusFilter.apply(labelIssues) : labelIssues;
+  const labelHidden = labelIssues.length - labelVisible.length;
+  const labelToLink = labelVisible.filter((issue) => !alreadyLinked.has(issue.key));
 
   const loadEpicStories = async () => {
     setLoadingEpics(true);
@@ -349,6 +405,17 @@ function JiraPickerModal({
                 </button>
               `
             : null}
+          ${canBulkLink
+            ? html`
+                <button
+                  type="button"
+                  className=${`jira-tab ${mode === "label" ? "active" : ""}`}
+                  onClick=${() => setMode("label")}
+                >
+                  By label
+                </button>
+              `
+            : null}
           <button
             type="button"
             className=${`jira-tab ${mode === "search" ? "active" : ""}`}
@@ -455,6 +522,100 @@ function JiraPickerModal({
                         : null}
                     </div>
                   `}
+            `
+          : mode === "label"
+          ? html`
+              <form onSubmit=${runLabelSearch} className="jira-search-form">
+                <div className="field-wide">
+                  <label htmlFor="jira-label-input">Jira label</label>
+                  <input
+                    id="jira-label-input"
+                    list="jira-label-options"
+                    placeholder="Start typing a label"
+                    value=${label}
+                    onInput=${(event) => setLabel(event.target.value)}
+                  />
+                  <datalist id="jira-label-options">
+                    ${labelOptions.map(
+                      (option) => html`<option key=${option} value=${option}></option>`
+                    )}
+                  </datalist>
+                  <span className="help-text">
+                    Optional — labels tag the stories that make up one project feature.
+                  </span>
+                </div>
+                <div className="field">
+                  <label htmlFor="jira-label-project">Jira project</label>
+                  <input
+                    id="jira-label-project"
+                    placeholder="SNA"
+                    value=${labelProjectKey}
+                    onInput=${(event) => setLabelProjectKey(event.target.value)}
+                  />
+                </div>
+                <div className="actions">
+                  <button className="button-secondary" type="submit" disabled=${labelSearching}>
+                    ${labelSearching ? "Searching…" : "Find stories"}
+                  </button>
+                  ${labelToLink.length
+                    ? html`
+                        <button
+                          className="button-primary"
+                          type="button"
+                          disabled=${submitting}
+                          onClick=${() => onLinkMany(labelToLink.map((issue) => issue.key))}
+                        >
+                          Link ${labelToLink.length} ${labelToLink.length === 1 ? "story" : "stories"}
+                        </button>
+                      `
+                    : null}
+                </div>
+              </form>
+              ${statusFilter && labelIssues.length
+                ? html`<${JiraStatusFilter} filter=${statusFilter} issues=${labelIssues} />`
+                : null}
+              ${labelIssues.length
+                ? html`
+                    <div className="jira-label-summary help-text">
+                      ${labelVisible.length} of ${labelIssues.length} story(s) in
+                      ${" "}${labelResult.project_key} labelled ${labelResult.label}
+                      ${labelHidden ? html`<span> · ${labelHidden} hidden by the status filter</span>` : null}
+                      ${labelResult.truncated
+                        ? html`<span> · showing the first 100 matches</span>`
+                        : null}
+                      ${labelVisible.length && !labelToLink.length
+                        ? html`<span> · all already linked</span>`
+                        : null}
+                    </div>
+                    <div className="jira-results">
+                      ${labelVisible.map((issue) => {
+                        const linked = alreadyLinked.has(issue.key);
+                        return html`
+                          <div className="jira-result-row" key=${issue.key}>
+                            <div className="jira-result-main">
+                              <a
+                                className="jira-result-key"
+                                href=${issue.url}
+                                target="_blank"
+                                rel="noreferrer"
+                              >${issue.key}</a>
+                              <span className=${jiraStatusClass(issue.status_category)}>
+                                ${issue.status}
+                              </span>
+                              <span className="jira-result-type">${issue.issue_type}</span>
+                              ${linked ? html`<span className="tiny-pill">Linked</span>` : null}
+                            </div>
+                            <div className="jira-result-summary">${issue.summary}</div>
+                          </div>
+                        `;
+                      })}
+                    </div>
+                  `
+                : html`<div className="empty-state">
+                    ${labelResult
+                      ? `No stories in ${labelResult.project_key} carry the label ${labelResult.label}.`
+                      : "Pick a label, then link every story it tags in one click."}
+                  </div>`}
             `
           : mode === "search"
           ? html`
@@ -881,6 +1042,29 @@ function JiraDeliverableLinks({
     }
   };
 
+  // One request for a whole label's worth of stories.
+  const linkMany = async (keys) => {
+    setSubmitting(true);
+    setPickerError("");
+    try {
+      const result = await api(`/api/deliverables/${deliverableId}/jira/links/bulk`, {
+        method: "POST",
+        body: JSON.stringify({ jira_keys: keys }),
+      });
+      setShowPicker(false);
+      const parts = [`Linked ${result.linked.length} story(s) to deliverable.`];
+      if (result.skipped.length) parts.push(`${result.skipped.length} already linked.`);
+      if (result.not_found.length) parts.push(`Not found: ${result.not_found.join(", ")}.`);
+      onMessage(parts.join(" "), result.not_found.length ? "error" : "success");
+      await load();
+      notifyLinked();
+    } catch (err) {
+      setPickerError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const unlink = async (link) => {
     setLoading(true);
     try {
@@ -933,6 +1117,7 @@ function JiraDeliverableLinks({
               teams=${null}
               onClose=${() => setShowPicker(false)}
               onLink=${linkIssue}
+              onLinkMany=${linkMany}
               submitting=${submitting}
               error=${pickerError}
               setError=${setPickerError}
@@ -1009,7 +1194,39 @@ function flashScrollTarget(targetId) {
   window.setTimeout(() => node.classList.remove("scroll-flash"), 1400);
 }
 
+function ProjectCard({ project, onOpenProject }) {
+  return html`
+    <article
+      className=${`project-card ${project.is_example ? "example" : ""}`}
+      style=${{ "--project-color": project.color }}
+    >
+      <div className="project-card-header">
+        <div className="project-dot"></div>
+        <strong>${project.name}</strong>
+        ${project.is_example
+          ? html`<span className="tiny-pill project-example-pill">Example</span>`
+          : null}
+      </div>
+      <p className="panel-copy">${project.description || "No description yet."}</p>
+      <div className="project-stats">
+        <span className="tiny-pill">${project.total_deliverables} deliverables</span>
+        <span className="tiny-pill">${project.total_teams} teams</span>
+        <span className="tiny-pill">${project.at_risk_deliverables} at risk</span>
+      </div>
+      <div className="actions">
+        <button className="button-primary" type="button" onClick=${() => onOpenProject(project.id)}>
+          Open workspace
+        </button>
+      </div>
+    </article>
+  `;
+}
+
 function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onCreateProject, submitting }) {
+  // Real project work first; example workspaces are reference material and sit below.
+  const realProjects = projects.filter((project) => !project.is_example);
+  const exampleProjects = projects.filter((project) => project.is_example);
+
   return html`
     <div className="app-shell">
       <section className="landing-hero hero-card">
@@ -1020,29 +1237,51 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
         </p>
       </section>
 
-      <section className="project-grid">
-        ${projects.map(
-          (project) => html`
-            <article className="project-card" key=${project.id} style=${{ "--project-color": project.color }}>
-              <div className="project-card-header">
-                <div className="project-dot"></div>
-                <strong>${project.name}</strong>
+      <section className="project-section">
+        <div className="project-section-heading">
+          <h2>Active project workspaces</h2>
+          <span className="tiny-pill">${realProjects.length}</span>
+        </div>
+        <p className="panel-copy">Workspaces tracking real delivery work.</p>
+        ${realProjects.length
+          ? html`
+              <div className="project-grid">
+                ${realProjects.map(
+                  (project) => html`<${ProjectCard}
+                    key=${project.id}
+                    project=${project}
+                    onOpenProject=${onOpenProject}
+                  />`
+                )}
               </div>
-              <p className="panel-copy">${project.description || "No description yet."}</p>
-              <div className="project-stats">
-                <span className="tiny-pill">${project.total_deliverables} deliverables</span>
-                <span className="tiny-pill">${project.total_teams} teams</span>
-                <span className="tiny-pill">${project.at_risk_deliverables} at risk</span>
-              </div>
-              <div className="actions">
-                <button className="button-primary" type="button" onClick=${() => onOpenProject(project.id)}>
-                  Open workspace
-                </button>
-              </div>
-            </article>
-          `
-        )}
+            `
+          : html`<div className="empty-state">
+              No real workspaces yet — onboard one below.
+            </div>`}
       </section>
+
+      ${exampleProjects.length
+        ? html`
+            <section className="project-section examples">
+              <div className="project-section-heading">
+                <h2>Example workspaces</h2>
+                <span className="tiny-pill">${exampleProjects.length}</span>
+              </div>
+              <p className="panel-copy">
+                Reference layouts for guidance — safe to experiment in.
+              </p>
+              <div className="project-grid">
+                ${exampleProjects.map(
+                  (project) => html`<${ProjectCard}
+                    key=${project.id}
+                    project=${project}
+                    onOpenProject=${onOpenProject}
+                  />`
+                )}
+              </div>
+            </section>
+          `
+        : null}
 
       <section className="panel">
         <h2>Onboard new project</h2>
@@ -1060,6 +1299,20 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
             <div className="field">
               <label htmlFor="project-color">Accent color</label>
               <input id="project-color" type="color" value=${projectForm.color} onInput=${(event) => setProjectForm({ ...projectForm, color: event.target.value })} />
+            </div>
+            <div className="field-wide">
+              <label className="checkbox-field" htmlFor="project-is-example">
+                <input
+                  id="project-is-example"
+                  type="checkbox"
+                  checked=${Boolean(projectForm.is_example)}
+                  onChange=${(event) => setProjectForm({ ...projectForm, is_example: event.target.checked })}
+                />
+                This is an example workspace
+              </label>
+              <span className="help-text">
+                Example workspaces are listed separately from real project work.
+              </span>
             </div>
           </div>
           <div className="actions">
@@ -1084,9 +1337,16 @@ function DeliverableForm({
   statusFilter,
 }) {
   const handleField = (key) => (event) => setForm({ ...form, [key]: event.target.value });
-  const handleDependencies = (event) => {
-    const values = Array.from(event.target.selectedOptions).map((option) => option.value);
-    setForm({ ...form, dependency_ids: values });
+  const dependencySet = new Set((form.dependency_ids || []).map(String));
+  const toggleDependency = (deliverableId) => {
+    const key = String(deliverableId);
+    const next = new Set(dependencySet);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    setForm({ ...form, dependency_ids: Array.from(next) });
   };
   const [showPicker, setShowPicker] = useState(false);
   const [pickerError, setPickerError] = useState("");
@@ -1113,6 +1373,16 @@ function DeliverableForm({
       return;
     }
     setForm({ ...form, jira_keys: [...pendingKeys, key] });
+    setShowPicker(false);
+  };
+  // Label search hands over every matching key at once; they are linked after save.
+  const appendPendingJiraKeys = (keys) => {
+    const next = [...pendingKeys];
+    for (const raw of keys || []) {
+      const key = (raw || "").trim().toUpperCase();
+      if (key && !next.includes(key)) next.push(key);
+    }
+    setForm({ ...form, jira_keys: next });
     setShowPicker(false);
   };
   const removePendingJira = (key) => {
@@ -1194,14 +1464,31 @@ function DeliverableForm({
         </div>
 
         <div className="field-wide">
-          <label htmlFor=${`${submitLabel}-dependencies`}>Upstream dependencies</label>
-          <select id=${`${submitLabel}-dependencies`} multiple value=${form.dependency_ids} onChange=${handleDependencies}>
-            ${deliverables.map(
-              (deliverable) => html`
-                <option key=${deliverable.id} value=${deliverable.id}>${deliverable.title}</option>
-              `
-            )}
-          </select>
+          <label>Upstream dependencies</label>
+          <div className="contrib-chips" role="group" aria-label="Upstream dependencies">
+            ${deliverables.length
+              ? deliverables.map((deliverable) => {
+                  const selected = dependencySet.has(String(deliverable.id));
+                  return html`
+                    <button
+                      key=${deliverable.id}
+                      type="button"
+                      className=${`contrib-chip ${selected ? "selected" : ""}`}
+                      aria-pressed=${selected}
+                      onClick=${() => toggleDependency(deliverable.id)}
+                    >
+                      ${deliverable.title}
+                      <span className="help-text">
+                        ${formatDisplayDate(deliverable.planned_start)} – ${formatDisplayDate(deliverable.planned_end)}
+                      </span>
+                    </button>
+                  `;
+                })
+              : html`<span className="help-text">
+                  No other deliverables in this project yet — create one first to set a
+                  dependency.
+                </span>`}
+          </div>
         </div>
 
         <div className="field-wide">
@@ -1255,6 +1542,7 @@ function DeliverableForm({
               teams=${null}
               onClose=${() => setShowPicker(false)}
               onLink=${appendPendingJira}
+              onLinkMany=${appendPendingJiraKeys}
               submitting=${false}
               error=${pickerError}
               setError=${setPickerError}
@@ -1907,6 +2195,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
     name: project.name,
     description: project.description || "",
     color: project.color,
+    is_example: Boolean(project.is_example),
   });
   const [confirmName, setConfirmName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1989,6 +2278,20 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
                 value=${draft.description}
                 onInput=${(event) => setDraft({ ...draft, description: event.target.value })}
               ></textarea>
+            </div>
+            <div className="field-wide">
+              <label className="checkbox-field" htmlFor="project-edit-is-example">
+                <input
+                  id="project-edit-is-example"
+                  type="checkbox"
+                  checked=${draft.is_example}
+                  onChange=${(event) => setDraft({ ...draft, is_example: event.target.checked })}
+                />
+                This is an example workspace
+              </label>
+              <span className="help-text">
+                Moves this workspace between the active and example sections on the landing page.
+              </span>
             </div>
           </div>
           <div className="actions">

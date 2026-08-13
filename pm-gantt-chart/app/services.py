@@ -50,7 +50,10 @@ def seed_data(db: Session) -> None:
 
     projects: List[models.Project] = []
     for name, description, color in DEFAULT_PROJECTS:
-        project = models.Project(name=name, description=description, color=color)
+        # Seeded workspaces exist as guidance, so they land in the example section.
+        project = models.Project(
+            name=name, description=description, color=color, is_example=True
+        )
         db.add(project)
         projects.append(project)
     db.flush()
@@ -173,6 +176,7 @@ def create_project(db: Session, payload: schemas.ProjectCreate) -> models.Projec
         name=payload.name,
         description=payload.description,
         color=payload.color,
+        is_example=payload.is_example,
     )
     db.add(project)
     db.commit()
@@ -605,6 +609,7 @@ def project_cards(db: Session) -> List[schemas.ProjectCard]:
                 name=project.name,
                 description=project.description,
                 color=project.color,
+                is_example=project.is_example,
                 total_deliverables=payload.summary.total_deliverables,
                 delayed_deliverables=payload.summary.delayed_deliverables,
                 at_risk_deliverables=payload.summary.at_risk_deliverables,

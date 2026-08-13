@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Dict, List
 
@@ -22,6 +23,8 @@ from .jira.auth import JiraNotConfigured  # noqa: E402
 from .jira.routes import router as jira_router  # noqa: E402
 from .jira import service as jira_service  # noqa: E402
 
+
+logger = logging.getLogger(__name__)
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT_DIR / "static"
@@ -94,12 +97,55 @@ def _migrate_deliverable_rename(bind=None) -> None:
         connection.execute(text("DROP INDEX IF EXISTS ix_tasks_id"))
 
 
+# Workspaces that predate `Project.is_example` but were only ever demo material.
+_LEGACY_EXAMPLE_PROJECT_NAMES = (
+    "Atlas API Expansion",
+    "Phoenix Retail Refresh",
+    "V2 Smoke Project",
+)
+
+
+def _migrate_example_flag(bind=None) -> None:
+    """Add `projects.is_example` and flag the pre-existing example workspaces.
+
+    `create_all` only creates missing tables, never missing columns, so the add
+    has to be explicit. Idempotent: the column check gates everything, so the
+    name-based backfill runs exactly once and a workspace demoted later in the UI
+    is never re-promoted.
+    """
+    bind = bind if bind is not None else engine
+    inspector = inspect(bind)
+    if "projects" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("projects")}
+    if "is_example" in columns:
+        return
+
+    with bind.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE projects ADD COLUMN is_example BOOLEAN NOT NULL DEFAULT 0"
+            )
+        )
+        placeholders = ", ".join(
+            f":name{index}" for index in range(len(_LEGACY_EXAMPLE_PROJECT_NAMES))
+        )
+        connection.execute(
+            text(f"UPDATE projects SET is_example = 1 WHERE name IN ({placeholders})"),
+            {
+                f"name{index}": name
+                for index, name in enumerate(_LEGACY_EXAMPLE_PROJECT_NAMES)
+            },
+        )
+
+
 def _ensure_v2_schema() -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
     if "projects" not in existing_tables:
         Base.metadata.drop_all(bind=engine)
     _migrate_deliverable_rename(engine)
+    _migrate_example_flag(engine)
     Base.metadata.create_all(bind=engine)
 
 
@@ -273,19 +319,20 @@ def create_project_deliverable(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Best-effort: link any Jira keys the user picked at create time; skip failures.
-    for raw_key in scoped_payload.jira_keys or []:
-        key = (raw_key or "").strip()
-        if not key:
-            continue
+    # Best-effort: link any Jira keys the user picked at create time. One batched
+    # call, so picking a whole label's worth of stories is still one Jira fetch.
+    if scoped_payload.jira_keys:
         try:
-            jira_service.link_issue_to_deliverable(
-                db, deliverable.id, schemas.JiraLinkCreate(jira_key=key)
+            jira_service.link_issues_to_deliverable(
+                db, deliverable.id, scoped_payload.jira_keys
             )
         except JiraNotConfigured:
-            break
+            pass
         except Exception:  # noqa: BLE001 - link is best-effort
-            continue
+            logger.warning(
+                "Jira linking failed for new deliverable %s", deliverable.id,
+                exc_info=True,
+            )
 
     refreshed = next(
         item

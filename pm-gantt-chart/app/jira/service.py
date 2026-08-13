@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_TTL_SECONDS = 300
+# Labels that tag a project feature live on stories in this Jira project.
+_DEFAULT_LABEL_PROJECT_KEY = "SNA"
 
 
 def _ttl_seconds() -> int:
@@ -31,6 +33,14 @@ def _ttl_seconds() -> int:
         return max(0, int(raw))
     except ValueError:
         return _DEFAULT_TTL_SECONDS
+
+
+def label_project_key(override: Optional[str] = None) -> str:
+    """Jira project the label search is scoped to, most specific source first."""
+    for candidate in (override, os.environ.get("JIRA_LABEL_PROJECT_KEY")):
+        if candidate and candidate.strip():
+            return candidate.strip()
+    return _DEFAULT_LABEL_PROJECT_KEY
 
 
 def get_client() -> JiraClient:
@@ -300,6 +310,87 @@ def fetch_children(epic_key: str, limit: int = 100) -> List[schemas.JiraSearchRe
     return [_to_search_result(raw, client.url) for raw in raw_issues]
 
 
+# ------------------------------------------------------------------------ labels
+
+
+def _quote_jql(value: str) -> str:
+    """Escape a user-supplied value for a double-quoted JQL literal."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _labels_from_issues(client: JiraClient, project_key: str, prefix: str) -> List[str]:
+    """Derive labels actually in use in `project_key` from recent issues."""
+    jql = (
+        f'project = "{_quote_jql(project_key)}" AND labels IS NOT EMPTY '
+        "ORDER BY updated DESC"
+    )
+    raws = client.search_all_issues(jql=jql, max_results=100)
+    lowered = prefix.lower()
+    found = set()
+    for raw in raws:
+        for label in (raw.get("fields") or {}).get("labels") or []:
+            if label and lowered in str(label).lower():
+                found.add(str(label))
+    return sorted(found)
+
+
+def suggest_labels(
+    query: str = "", project_key: Optional[str] = None, limit: int = 25
+) -> schemas.JiraLabelSuggestions:
+    """Label typeahead for the "By label" picker tab.
+
+    Jira's autocomplete endpoint is tenant-wide, so results are filtered on the
+    query here. If it is unavailable (some tenants restrict it), fall back to the
+    labels actually used by recent issues in `project_key` — slower, but scoped.
+    """
+    key = label_project_key(project_key)
+    client = get_client()
+    prefix = (query or "").strip()
+
+    try:
+        payload = client.get_label_suggestions(prefix)
+    except requests.HTTPError as exc:
+        logger.warning("Jira label autocomplete unavailable, deriving from issues: %s", exc)
+        return schemas.JiraLabelSuggestions(
+            project_key=key,
+            labels=_labels_from_issues(client, key, prefix)[:limit],
+            source="issues",
+        )
+
+    lowered = prefix.lower()
+    labels = []
+    for item in payload.get("results") or []:
+        value = (item or {}).get("value") or ""
+        if value and lowered in value.lower() and value not in labels:
+            labels.append(value)
+    return schemas.JiraLabelSuggestions(
+        project_key=key, labels=labels[:limit], source="suggestions"
+    )
+
+
+def search_by_label(
+    label: str, project_key: Optional[str] = None, limit: int = 100
+) -> schemas.JiraLabelSearchResponse:
+    """Every issue in `project_key` carrying `label`, newest first."""
+    cleaned = (label or "").strip()
+    if not cleaned:
+        raise ValueError("A Jira label is required.")
+    key = label_project_key(project_key)
+    jql = (
+        f'project = "{_quote_jql(key)}" AND labels = "{_quote_jql(cleaned)}" '
+        "ORDER BY updated DESC"
+    )
+    client = get_client()
+    raws = client.search_all_issues(jql=jql, max_results=limit)
+    return schemas.JiraLabelSearchResponse(
+        project_key=key,
+        label=cleaned,
+        issues=[_to_search_result(raw, client.url) for raw in raws],
+        # The caller's cap was hit, so there may be more behind it.
+        truncated=len(raws) >= limit,
+    )
+
+
 def sync_keys(db: Session, keys: Sequence[str]) -> Dict[str, models.JiraIssue]:
     """Refresh a set of Jira keys in one JQL batch and upsert results."""
     unique = sorted({k for k in keys if k})
@@ -523,6 +614,53 @@ def link_issue_to_deliverable(
     db.commit()
     db.refresh(link)
     return _deliverable_link_read(link)
+
+
+def link_issues_to_deliverable(
+    db: Session, deliverable_id: int, jira_keys: Sequence[str]
+) -> schemas.JiraBulkLinkResult:
+    """Link many Jira keys to one deliverable in a single Jira round trip.
+
+    Linking a whole label's worth of stories one key at a time would mean one
+    Jira search each; `sync_keys` already batches, so the fetch cost here is flat.
+    """
+    deliverable = db.get(models.Deliverable, deliverable_id)
+    if deliverable is None:
+        raise ValueError("Deliverable not found.")
+
+    requested = list(dict.fromkeys((key or "").strip() for key in jira_keys))
+    requested = [key for key in requested if key]
+    if not requested:
+        return schemas.JiraBulkLinkResult()
+
+    fetched = sync_keys(db, requested)
+    existing_issue_ids = {
+        link.jira_issue_id for link in _load_deliverable_links(db, deliverable_id)
+    }
+
+    result = schemas.JiraBulkLinkResult()
+    now = datetime.utcnow()
+    for key in requested:
+        issue = fetched.get(key.upper()) or fetched.get(key)
+        if issue is None:
+            result.not_found.append(key)
+            continue
+        if issue.id in existing_issue_ids:
+            result.skipped.append(issue.jira_key)
+            continue
+        db.add(
+            models.DeliverableJiraLink(
+                deliverable_id=deliverable_id,
+                jira_issue_id=issue.id,
+                linked_at=now,
+            )
+        )
+        existing_issue_ids.add(issue.id)
+        result.linked.append(issue.jira_key)
+
+    if result.linked:
+        db.commit()
+    return result
 
 
 def _load_project_deliverable_links(

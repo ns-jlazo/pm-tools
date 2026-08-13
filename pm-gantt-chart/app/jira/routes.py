@@ -55,6 +55,28 @@ def jira_search(
     return _handle_jira_call(service.search, jql=jql, limit=limit)
 
 
+@router.get("/jira/labels", response_model=schemas.JiraLabelSuggestions)
+def jira_labels(
+    query: str = Query("", description="Filter labels by substring"),
+    project_key: str = Query("", description="Overrides JIRA_LABEL_PROJECT_KEY"),
+    limit: int = Query(25, ge=1, le=100),
+) -> schemas.JiraLabelSuggestions:
+    return _handle_jira_call(
+        service.suggest_labels, query=query, project_key=project_key, limit=limit
+    )
+
+
+@router.get("/jira/labels/issues", response_model=schemas.JiraLabelSearchResponse)
+def jira_label_issues(
+    label: str = Query(..., min_length=1, description="Exact Jira label"),
+    project_key: str = Query("", description="Overrides JIRA_LABEL_PROJECT_KEY"),
+    limit: int = Query(100, ge=1, le=100),
+) -> schemas.JiraLabelSearchResponse:
+    return _handle_jira_call(
+        service.search_by_label, label=label, project_key=project_key, limit=limit
+    )
+
+
 @router.get("/jira/issues/{key}", response_model=schemas.JiraSearchResult)
 def jira_get_issue(key: str) -> schemas.JiraSearchResult:
     return _handle_jira_call(service.get_issue_by_key, key)
@@ -149,6 +171,21 @@ def create_deliverable_jira_link(
 ) -> schemas.DeliverableJiraLinkRead:
     return _handle_jira_call(
         service.link_issue_to_deliverable, db, deliverable_id, payload
+    )
+
+
+@router.post(
+    "/deliverables/{deliverable_id}/jira/links/bulk",
+    response_model=schemas.JiraBulkLinkResult,
+)
+def create_deliverable_jira_links_bulk(
+    deliverable_id: int,
+    payload: schemas.JiraBulkLinkCreate,
+    db: Session = Depends(get_db),
+) -> schemas.JiraBulkLinkResult:
+    """Link every story matching a Jira label without a request per key."""
+    return _handle_jira_call(
+        service.link_issues_to_deliverable, db, deliverable_id, payload.jira_keys
     )
 
 

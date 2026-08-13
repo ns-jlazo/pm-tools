@@ -126,6 +126,55 @@ made every Jira lookup (e.g. `SNA-28969`) fail, plus one blind spot:
 
 ---
 
+## Phase 9 — UX updates: example workspaces, dependency picker, label linking (2026-08-13)
+
+- [x] **Example vs. real workspaces.** New `projects.is_example` column
+  (`Project.is_example`, on `ProjectCreate` / `ProjectUpdate` / `ProjectCard`).
+  `app/main.py::_migrate_example_flag()` adds the column on startup and flags the
+  workspaces that predate it by name (`_LEGACY_EXAMPLE_PROJECT_NAMES`: Atlas API
+  Expansion, Phoenix Retail Refresh, V2 Smoke Project). `create_all` never adds
+  columns, so the `ALTER TABLE` is explicit; the column check gates the backfill, so
+  a workspace demoted later in the UI is never re-promoted. `seed_data()` creates the
+  default workspaces with `is_example=True`.
+- [x] **Split landing sections.** `LandingView` partitions on `is_example` into
+  "Active project workspaces" (with a `No real workspaces yet` empty state) and
+  "Example workspaces". Card markup extracted into a `ProjectCard` component; example
+  cards get a dashed border and an `Example` pill. The flag is set in the
+  "Onboard new project" form and stays editable in `ProjectSettingsDrawer`.
+- [x] **Upstream dependencies show what's available.** The `<select multiple>` is now
+  the same `.contrib-chips` toggle pattern as "Contributing teams", each chip showing
+  the deliverable title and its planned window, plus an explicit
+  `No other deliverables in this project yet` line. `form.dependency_ids` keeps its
+  shape, so both submit handlers are unchanged. Dependencies remain
+  deliverable→deliverable — no Jira dependency model.
+- [x] **Link stories by Jira label.** Labels tag a project feature and live on
+  stories, so the search is scoped to one Jira project (`JIRA_LABEL_PROJECT_KEY`,
+  default `SNA`). New `GET /api/jira/labels` (typeahead via
+  `/rest/api/3/jql/autocompletedata/suggestions`, falling back to labels derived from
+  recent project issues when a tenant restricts it — reported as `source`),
+  `GET /api/jira/labels/issues` (`project = ... AND labels = ...`, quote-escaped,
+  reports `truncated`), and `POST /api/deliverables/{id}/jira/links/bulk`.
+- [x] **Bulk linking is one round trip.** `link_issues_to_deliverable()` makes a
+  single `sync_keys()` call for the whole list and returns
+  `linked` / `skipped` / `not_found`. The Create panel's per-key loop in
+  `create_project_deliverable` was replaced with it, so a 40-story label batch is one
+  Jira fetch instead of 40.
+- [x] Frontend: `JiraPickerModal` gained a `By label` tab (shown only where
+  `onLinkMany` is passed) with a single `Link N stories` action that honors the shared
+  status filter and reports hidden / truncated / already-linked counts. Wired through
+  `JiraDeliverableLinks` (Update panel + Gantt inline popover) and `DeliverableForm`
+  (pending keys linked on save).
+- [x] New schemas: `JiraLabelSuggestions`, `JiraLabelSearchResponse`,
+  `JiraBulkLinkCreate`, `JiraBulkLinkResult`.
+- [x] `static/styles.css` — `.project-section*`, `.project-card.example`,
+  `.project-example-pill`, `.checkbox-field`, `.jira-label-summary`.
+- [x] `static/index.html` cache-busting bumped to `?v=20260813b`.
+- [x] Tests: example-flag migration (backfill, idempotence, no re-promotion),
+  `is_example` create/update/card round-trip, label JQL scoping + escaping,
+  autocomplete fallback, and bulk-link linked/skipped/not-found in one fetch.
+
+---
+
 ## Verification checklist — run 2026-08-12 against `netskope.atlassian.net`
 
 Verified with `.venv` (Python 3.10; pydantic 2.9.2 has no cp314 wheel) on port 8010,
@@ -176,6 +225,45 @@ Verified with `.venv` (Python 3.10; pydantic 2.9.2 has no cp314 wheel) on port 8
   the timeline overlay (deliverable 1 → SNA-37796, SNA-38622; deliverable 2 → SNA-28969).
 - [ ] Browser click-through of the new flows (status chips, "From linked epics" tab,
   inline-popover linking, story overlay expand) — request construction and payloads
+  verified, DOM interaction not driven.
+
+## Verification checklist — Phase 9, run 2026-08-13 against `netskope.atlassian.net`
+
+Run on port 8010 with `.venv` (Python 3.10). All test rows created below were deleted
+afterwards; the local DB is back to 2 workspaces / 10 deliverables / 3 Jira links.
+
+- [x] `.venv/bin/python -m pytest tests -q` → **42 passed** (24 → 42);
+  `node --check static/app.js` clean.
+- [x] **Migration on the real file DB.** Backed up to `/tmp/pm_tool.db.bak`, inserted a
+  third `Real Work Check` project into the pre-migration schema, restarted → `is_example`
+  added, `Atlas API Expansion` / `Phoenix Retail Refresh` = `1`, `Real Work Check` = `0`.
+  A second restart no-ops (0 errors in the log, flags unchanged).
+- [x] `PUT /api/projects/1 {"is_example": false}` → flag clears with name, description,
+  and color intact; `true` restores it. `POST /api/projects` honors the flag both ways
+  and defaults to `false`.
+- [x] `GET /api/jira/labels?query=pay` → `{"project_key": "SNA", "labels":
+  ["payload-capture"], "source": "suggestions"}` — the autocomplete endpoint is
+  available on this tenant, so the derive-from-issues fallback is covered by unit test.
+- [x] `GET /api/jira/labels/issues?label=CVE-2020-0601` → 11 SNA stories with status
+  categories, `truncated: false`; `&limit=1` → `truncated: true`;
+  `&project_key=DPE` → 0 rows, confirming the search is genuinely project-scoped.
+  Omitting `label` → `422`.
+- [x] `POST /api/deliverables/2/jira/links/bulk` with
+  `["SNA-34045","SNA-25208","SNA-31019"]` → `linked` the first two, `skipped` the
+  already-linked third; `FAKE-1` comes back in `not_found`; re-running returns
+  everything as `skipped`. Empty `jira_keys` is a no-op with no Jira call; an unknown
+  deliverable → `400`.
+- [x] Create-with-keys path: `POST /api/projects/1/deliverables` with three
+  `jira_keys` returned a deliverable already carrying all three links — one batched
+  `sync_keys()` call instead of one request per key.
+- [x] Served assets are the busted versions (`?v=20260813b`, 200) and carry the new
+  copy (`Active project workspaces`, `Example workspaces`,
+  `No other deliverables in this project yet`, `By label`,
+  `This is an example workspace`). A fresh project returns `[]` deliverables, which is
+  the condition the dependency empty state renders on.
+- [ ] Browser click-through (landing sections + pills, onboard/edit toggle moving a
+  workspace between sections, dependency chips, `By label` → `Link N stories` from both
+  the Update panel and the Gantt popover) — endpoints, payloads, and served markup
   verified, DOM interaction not driven.
 
 ## Deferred / out of scope

@@ -31,6 +31,8 @@ the server process environment.
 
 Optional:
 - `JIRA_SYNC_TTL_SECONDS` — freshness window for cached issues (default `300`).
+- `JIRA_LABEL_PROJECT_KEY` — Jira project the label search (Step 5) is scoped to
+  (default `SNA`).
 - `JIRA_DISABLE_SSL_VERIFY=1` — only if you sit behind a TLS-intercepting proxy.
 
 Generate a token at https://id.atlassian.com/manage-profile/security/api-tokens.
@@ -106,13 +108,48 @@ curl -sX POST http://localhost:8001/api/deliverables/17/jira/links \
   -d '{"jira_key": "ABC-456"}'
 ```
 
-## Step 5 — Refresh cached data
+## Step 5 — Link a whole feature at once by Jira label
+
+Features are tagged with a Jira label on their stories, so one label is usually the
+whole set of work behind a deliverable. In any deliverable story picker, open the
+**By label** tab:
+
+1. Start typing a label — the field suggests labels as you type.
+2. The **Jira project** field is prefilled from `JIRA_LABEL_PROJECT_KEY` (default
+   `SNA`); change it to search another project.
+3. Click **Find stories**. Results honor the story status filter, so closed stories
+   stay hidden unless you re-enable them.
+4. Click **Link N stories** — every visible match is linked in one action; there are
+   no per-row checkboxes. The line beneath reports how many are hidden by the filter,
+   whether the 100-result cap was hit, and whether everything is already linked.
+
+From the **Create deliverable** panel the keys are queued and linked when you save.
+
+Programmatic:
+
+```bash
+# what labels look like
+curl -s 'http://localhost:8001/api/jira/labels?query=pay' | python3 -m json.tool
+
+# which stories carry one
+curl -s 'http://localhost:8001/api/jira/labels/issues?label=payments-v2' | python3 -m json.tool
+
+# link them all in one request (one Jira fetch, not one per key)
+curl -sX POST http://localhost:8001/api/deliverables/17/jira/links/bulk \
+  -H 'content-type: application/json' \
+  -d '{"jira_keys": ["SNA-38622", "SNA-37796"]}'
+# -> {"linked": [...], "skipped": [...], "not_found": [...]}
+```
+
+`skipped` means already linked; re-running the same call is safe.
+
+## Step 6 — Refresh cached data
 
 - Cached issue metadata (status, summary, assignee, due date) is refreshed on-load once older than `JIRA_SYNC_TTL_SECONDS`.
 - Click **Refresh** in the **Link Teams to Jira Work Items** panel to force a project-wide sync.
 - Or hit `POST /api/projects/{id}/jira/sync`.
 
-## Step 6 — See stories under a linked epic
+## Step 7 — See stories under a linked epic
 
 Every linked epic exposes a **Show stories** toggle in the panel. It calls `/api/jira/issues/{EPIC-KEY}/children` and lists stories with status pills. Nothing is written back — this is a read-only sidebar. To connect a story to a deliverable, use Step 4 with the story's key.
 
@@ -120,7 +157,7 @@ Stories in Jira's `done` category (Closed, Done, Resolved) are hidden by default
 The **Story status** chip row toggles each status; the choice is remembered per
 project in `localStorage`.
 
-## Step 7 — See linked stories on the timeline
+## Step 8 — See linked stories on the timeline
 
 Tick **Show Jira stories** in the timeline toolbar. Each deliverable row then
 lists its linked stories, and expanding a story (`+`) shows that story's Jira
@@ -129,7 +166,7 @@ whole overlay is one request, `GET /api/projects/{id}/jira/deliverable-links`,
 served from cached issue data, and nothing is fetched while the toggle is off.
 The toggle state persists per project.
 
-## Step 8 — Troubleshooting
+## Step 9 — Troubleshooting
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
@@ -139,6 +176,7 @@ The toggle state persists per project.
 | Keyword search finds nothing for `ABC-123` | `text ~` doesn't index issue keys | the UI now auto-switches to `issuekey = "ABC-123"`; in the CLI, query `issuekey = "ABC-123"` |
 | `404 Jira issue not found` | Typo in key, issue in another site, or bad token | Confirm key exists via `scripts/jira-search.py 'issuekey = "ABC-123"'` |
 | Stories don't appear under an epic | Jira uses a non-standard parent link | Confirm `parent = "EPIC-KEY"` returns rows in the CLI |
+| **By label** finds no stories | Label is used in another Jira project, or spelled differently | Change the **Jira project** field, or check the suggestions list / `JIRA_LABEL_PROJECT_KEY` |
 | Timeout / connect errors | Atlassian edge incident | Retry; client backs off 0/3/6/12s automatically |
 
 ## Out of scope

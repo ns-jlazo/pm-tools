@@ -19,7 +19,7 @@ from app.jira.auth import JiraNotConfigured
 
 
 def _make_issue(key: str, status: str = "To Do", category: str = "new",
-                summary: str = "Ticket") -> Dict[str, Any]:
+                summary: str = "Ticket", labels: Any = None) -> Dict[str, Any]:
     return {
         "key": key,
         "fields": {
@@ -29,6 +29,7 @@ def _make_issue(key: str, status: str = "To Do", category: str = "new",
             "assignee": {"displayName": "Jamie Fox", "emailAddress": "jamie@example.com"},
             "duedate": "2026-08-31",
             "parent": None,
+            "labels": list(labels or []),
         },
     }
 
@@ -39,9 +40,18 @@ class _FakeClient:
         self.issues: Dict[str, Dict[str, Any]] = {}
         self.search_calls: List[str] = []
         self.get_calls: List[str] = []
+        self.label_calls: List[str] = []
+        self.label_payload: Dict[str, Any] = {"results": []}
+        self.label_error: Any = None
 
     def add(self, key: str, **kwargs: Any) -> None:
         self.issues[key] = _make_issue(key, **kwargs)
+
+    def get_label_suggestions(self, prefix: str = "") -> Dict[str, Any]:
+        self.label_calls.append(prefix)
+        if self.label_error is not None:
+            raise self.label_error
+        return self.label_payload
 
     def search_all_issues(self, jql: str, max_results: int = 500,
                           fields: Any = None) -> List[Dict[str, Any]]:
@@ -185,6 +195,137 @@ class JiraServiceTests(unittest.TestCase):
                 self.db, self.deliverable_id, refresh_stale=False
             ),
             [],
+        )
+
+    def test_bulk_link_links_new_keys_in_one_fetch(self) -> None:
+        self.fake.add("SNA-1")
+        self.fake.add("SNA-2")
+        self.fake.search_calls.clear()
+
+        result = jira_service.link_issues_to_deliverable(
+            self.db, self.deliverable_id, ["SNA-1", "SNA-2", "SNA-1", "  "]
+        )
+
+        self.assertEqual(sorted(result.linked), ["SNA-1", "SNA-2"])
+        self.assertEqual(result.skipped, [])
+        self.assertEqual(result.not_found, [])
+        # A whole label's worth of stories must cost one Jira search, not one each.
+        self.assertEqual(len(self.fake.search_calls), 1)
+        self.assertEqual(
+            self.db.query(models.DeliverableJiraLink).count(), 2
+        )
+
+    def test_bulk_link_skips_already_linked_and_reports_missing(self) -> None:
+        self.fake.add("SNA-1")
+        self.fake.add("SNA-2")
+        jira_service.link_issue_to_deliverable(
+            self.db, self.deliverable_id, schemas.JiraLinkCreate(jira_key="SNA-1")
+        )
+
+        result = jira_service.link_issues_to_deliverable(
+            self.db, self.deliverable_id, ["SNA-1", "SNA-2", "GHOST-9"]
+        )
+
+        self.assertEqual(result.linked, ["SNA-2"])
+        self.assertEqual(result.skipped, ["SNA-1"])
+        self.assertEqual(result.not_found, ["GHOST-9"])
+        self.assertEqual(self.db.query(models.DeliverableJiraLink).count(), 2)
+
+    def test_bulk_link_with_no_keys_touches_nothing(self) -> None:
+        self.fake.search_calls.clear()
+
+        result = jira_service.link_issues_to_deliverable(self.db, self.deliverable_id, [])
+
+        self.assertEqual((result.linked, result.skipped, result.not_found), ([], [], []))
+        self.assertEqual(self.fake.search_calls, [])
+
+    def test_bulk_link_rejects_unknown_deliverable(self) -> None:
+        with self.assertRaises(ValueError):
+            jira_service.link_issues_to_deliverable(self.db, 9999, ["SNA-1"])
+
+
+class JiraLabelTests(unittest.TestCase):
+    """Labels tag a project feature, so the search must stay project-scoped."""
+
+    def setUp(self) -> None:
+        self.fake = _FakeClient()
+        self._patcher = mock.patch.object(
+            jira_service, "get_client", return_value=self.fake
+        )
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+        # Keep a developer's real .env out of the scoping assertions.
+        self._env = mock.patch.dict(os.environ, {}, clear=False)
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        os.environ.pop("JIRA_LABEL_PROJECT_KEY", None)
+
+    def test_label_project_key_precedence(self) -> None:
+        self.assertEqual(jira_service.label_project_key(), "SNA")
+        os.environ["JIRA_LABEL_PROJECT_KEY"] = "PLAT"
+        self.assertEqual(jira_service.label_project_key(), "PLAT")
+        self.assertEqual(jira_service.label_project_key("  "), "PLAT")
+        self.assertEqual(jira_service.label_project_key(" OPS "), "OPS")
+
+    def test_search_by_label_scopes_and_escapes_the_jql(self) -> None:
+        self.fake.add("SNA-1", labels=["pay-v2"])
+
+        response = jira_service.search_by_label('pay "v2"')
+
+        self.assertEqual(response.project_key, "SNA")
+        self.assertEqual(response.label, 'pay "v2"')
+        self.assertEqual([issue.key for issue in response.issues], ["SNA-1"])
+        self.assertFalse(response.truncated)
+        self.assertEqual(
+            self.fake.search_calls,
+            ['project = "SNA" AND labels = "pay \\"v2\\"" ORDER BY updated DESC'],
+        )
+
+    def test_search_by_label_honors_the_project_override_and_cap(self) -> None:
+        self.fake.add("OPS-1", labels=["net"])
+        self.fake.add("OPS-2", labels=["net"])
+
+        response = jira_service.search_by_label("net", project_key="OPS", limit=2)
+
+        self.assertEqual(response.project_key, "OPS")
+        self.assertIn('project = "OPS"', self.fake.search_calls[0])
+        # The cap was hit, so the UI has to warn there may be more behind it.
+        self.assertTrue(response.truncated)
+
+    def test_search_by_label_requires_a_label(self) -> None:
+        with self.assertRaises(ValueError):
+            jira_service.search_by_label("   ")
+
+    def test_suggest_labels_filters_autocomplete_results(self) -> None:
+        self.fake.label_payload = {
+            "results": [
+                {"value": "payments-v2"},
+                {"value": "payments-v2"},
+                {"value": "networking"},
+                {"value": ""},
+            ]
+        }
+
+        suggestions = jira_service.suggest_labels(query="pay")
+
+        self.assertEqual(suggestions.labels, ["payments-v2"])
+        self.assertEqual(suggestions.source, "suggestions")
+        self.assertEqual(suggestions.project_key, "SNA")
+        self.assertEqual(self.fake.label_calls, ["pay"])
+
+    def test_suggest_labels_falls_back_to_project_issues(self) -> None:
+        response = mock.Mock(status_code=404)
+        self.fake.label_error = requests.HTTPError(response=response)
+        self.fake.add("SNA-1", labels=["payments-v2", "networking"])
+        self.fake.add("SNA-2", labels=["payments-billing"])
+
+        suggestions = jira_service.suggest_labels(query="pay")
+
+        self.assertEqual(suggestions.labels, ["payments-billing", "payments-v2"])
+        self.assertEqual(suggestions.source, "issues")
+        self.assertEqual(suggestions.project_key, "SNA")
+        self.assertIn(
+            'project = "SNA" AND labels IS NOT EMPTY', self.fake.search_calls[0]
         )
 
 
