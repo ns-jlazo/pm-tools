@@ -191,6 +191,17 @@ def project_deliverable_jira_links(
     return _handle_jira_call(service.list_project_deliverable_links, db, project_id)
 
 
+@router.get(
+    "/projects/{project_id}/jira/milestone-links",
+    response_model=schemas.ProjectMilestoneJiraLinks,
+)
+def project_milestone_jira_links(
+    project_id: int, db: Session = Depends(get_db)
+) -> schemas.ProjectMilestoneJiraLinks:
+    """The milestone half of the story overlay, also one request for the chart."""
+    return _handle_jira_call(service.list_project_milestone_links, db, project_id)
+
+
 # --------------------------------------------------------- deliverable linking
 
 
@@ -243,4 +254,59 @@ def delete_deliverable_jira_link(
     deliverable_id: int, link_id: int, db: Session = Depends(get_db)
 ) -> Response:
     _handle_jira_call(service.unlink_deliverable_link, db, deliverable_id, link_id)
+    return Response(status_code=204)
+
+
+# ----------------------------------------------------------- milestone linking
+# Same shape as the deliverable routes above: a milestone links Jira work items
+# exactly as its parent does.
+
+
+@router.get(
+    "/milestones/{milestone_id}/jira",
+    response_model=List[schemas.MilestoneJiraLinkRead],
+)
+def milestone_jira_links(
+    milestone_id: int, db: Session = Depends(get_db)
+) -> List[schemas.MilestoneJiraLinkRead]:
+    return _handle_jira_call(service.list_milestone_links, db, milestone_id)
+
+
+@router.post(
+    "/milestones/{milestone_id}/jira/links",
+    response_model=schemas.MilestoneJiraLinkRead,
+    status_code=201,
+)
+def create_milestone_jira_link(
+    milestone_id: int,
+    payload: schemas.JiraLinkCreate,
+    db: Session = Depends(get_db),
+) -> schemas.MilestoneJiraLinkRead:
+    return _handle_jira_call(service.link_issue_to_milestone, db, milestone_id, payload)
+
+
+@router.post(
+    "/milestones/{milestone_id}/jira/links/bulk",
+    response_model=schemas.JiraBulkLinkResult,
+)
+def create_milestone_jira_links_bulk(
+    milestone_id: int,
+    payload: schemas.JiraBulkLinkCreate,
+    db: Session = Depends(get_db),
+) -> schemas.JiraBulkLinkResult:
+    """Link every story matching a Jira label without a request per key."""
+    return _handle_jira_call(
+        service.link_issues_to_milestone, db, milestone_id, payload.jira_keys
+    )
+
+
+@router.delete(
+    "/milestones/{milestone_id}/jira/links/{link_id}",
+    status_code=204,
+    response_class=Response,
+)
+def delete_milestone_jira_link(
+    milestone_id: int, link_id: int, db: Session = Depends(get_db)
+) -> Response:
+    _handle_jira_call(service.unlink_milestone_link, db, milestone_id, link_id)
     return Response(status_code=204)

@@ -139,6 +139,25 @@ def _migrate_example_flag(bind=None) -> None:
         )
 
 
+def _migrate_release_date(bind=None) -> None:
+    """Add `projects.release_date` — the date the software reaches customers.
+
+    Same reason as `_migrate_example_flag`: `create_all` adds missing tables but
+    never missing columns. Nullable, so there is nothing to backfill. Idempotent
+    via the column check.
+    """
+    bind = bind if bind is not None else engine
+    inspector = inspect(bind)
+    if "projects" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("projects")}
+    if "release_date" in columns:
+        return
+
+    with bind.begin() as connection:
+        connection.execute(text("ALTER TABLE projects ADD COLUMN release_date DATE"))
+
+
 def _ensure_v2_schema() -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -146,6 +165,8 @@ def _ensure_v2_schema() -> None:
         Base.metadata.drop_all(bind=engine)
     _migrate_deliverable_rename(engine)
     _migrate_example_flag(engine)
+    _migrate_release_date(engine)
+    # Adds the milestone tables on an existing database.
     Base.metadata.create_all(bind=engine)
 
 
@@ -382,6 +403,86 @@ def delete_project_deliverable(
         raise HTTPException(status_code=404, detail="Deliverable not found.")
     db.delete(deliverable)
     db.commit()
+    return Response(status_code=204)
+
+
+# ------------------------------------------------------------------- milestones
+# Keyed off the deliverable, not the project: a milestone cannot exist without a
+# parent deliverable, so the parent is what identifies where it belongs.
+
+
+@app.get(
+    "/api/deliverables/{deliverable_id}/milestones",
+    response_model=List[schemas.MilestoneRead],
+)
+def get_deliverable_milestones(
+    deliverable_id: int, db: Session = Depends(get_db)
+) -> List[schemas.MilestoneRead]:
+    deliverable = db.get(models.Deliverable, deliverable_id)
+    if deliverable is None:
+        raise HTTPException(status_code=404, detail="Deliverable not found.")
+    return [
+        services.serialize_milestone(milestone)
+        for milestone in services.list_milestones(db, deliverable_id)
+    ]
+
+
+@app.post(
+    "/api/deliverables/{deliverable_id}/milestones",
+    response_model=schemas.MilestoneRead,
+    status_code=201,
+)
+def create_deliverable_milestone(
+    deliverable_id: int,
+    payload: schemas.MilestoneCreate,
+    db: Session = Depends(get_db),
+) -> schemas.MilestoneRead:
+    deliverable = db.get(models.Deliverable, deliverable_id)
+    if deliverable is None:
+        raise HTTPException(status_code=404, detail="Deliverable not found.")
+
+    try:
+        milestone = services.create_milestone(db, deliverable, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Best-effort, exactly as for a new deliverable: one batched Jira call so a
+    # whole label's worth of stories still costs a single fetch.
+    if payload.jira_keys:
+        try:
+            jira_service.link_issues_to_milestone(db, milestone.id, payload.jira_keys)
+        except JiraNotConfigured:
+            pass
+        except Exception:  # noqa: BLE001 - link is best-effort
+            logger.warning(
+                "Jira linking failed for new milestone %s", milestone.id, exc_info=True
+            )
+
+    return services.serialize_milestone(milestone)
+
+
+@app.put("/api/milestones/{milestone_id}", response_model=schemas.MilestoneRead)
+def update_milestone(
+    milestone_id: int,
+    payload: schemas.MilestoneUpdate,
+    db: Session = Depends(get_db),
+) -> schemas.MilestoneRead:
+    milestone = services.get_milestone(db, milestone_id)
+    if milestone is None:
+        raise HTTPException(status_code=404, detail="Milestone not found.")
+    try:
+        services.update_milestone(db, milestone, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return services.serialize_milestone(milestone)
+
+
+@app.delete("/api/milestones/{milestone_id}", status_code=204, response_class=Response)
+def delete_milestone(milestone_id: int, db: Session = Depends(get_db)) -> Response:
+    milestone = services.get_milestone(db, milestone_id)
+    if milestone is None:
+        raise HTTPException(status_code=404, detail="Milestone not found.")
+    services.delete_milestone(db, milestone)
     return Response(status_code=204)
 
 

@@ -100,10 +100,22 @@ class JiraServiceTests(unittest.TestCase):
             progress=0,
         )
         self.db.add(deliverable)
+        self.db.flush()
+        milestone = models.Milestone(
+            deliverable_id=deliverable.id,
+            title="M1",
+            description="",
+            team_id=team.id,
+            target_date=date(2026, 8, 3),
+            status="planned",
+            progress=0,
+        )
+        self.db.add(milestone)
         self.db.commit()
         self.project_id = project.id
         self.team_id = team.id
         self.deliverable_id = deliverable.id
+        self.milestone_id = milestone.id
 
         self.fake = _FakeClient()
         self._patcher = mock.patch.object(jira_service, "get_client", return_value=self.fake)
@@ -245,6 +257,139 @@ class JiraServiceTests(unittest.TestCase):
     def test_bulk_link_rejects_unknown_deliverable(self) -> None:
         with self.assertRaises(ValueError):
             jira_service.link_issues_to_deliverable(self.db, 9999, ["SNA-1"])
+
+    def _link_milestone(self, milestone_id: int, key: str) -> Any:
+        """Link one key, keeping the fake honest about which issue was asked for.
+
+        A single-key link syncs with `max_results=1` and the fake answers any JQL
+        with its first stored issue, so only the wanted key may be in flight.
+        """
+        self.fake.issues.clear()
+        self.fake.add(key)
+        return jira_service.link_issue_to_milestone(
+            self.db, milestone_id, schemas.JiraLinkCreate(jira_key=key)
+        )
+
+    # --- milestones: same linking contract as a deliverable, different owner ---
+
+    def test_milestone_link_roundtrip(self) -> None:
+        self.fake.add("STORY-2", status="Done", category="done")
+        link = jira_service.link_issue_to_milestone(
+            self.db, self.milestone_id, schemas.JiraLinkCreate(jira_key="STORY-2")
+        )
+        self.assertEqual(link.issue.key, "STORY-2")
+        self.assertEqual(link.milestone_id, self.milestone_id)
+
+        links = jira_service.list_milestone_links(
+            self.db, self.milestone_id, refresh_stale=False
+        )
+        self.assertEqual(len(links), 1)
+
+        jira_service.unlink_milestone_link(self.db, self.milestone_id, link.id)
+        self.assertEqual(
+            jira_service.list_milestone_links(
+                self.db, self.milestone_id, refresh_stale=False
+            ),
+            [],
+        )
+        # The cached issue is shared with the deliverable overlay, so it stays.
+        self.assertEqual(
+            self.db.query(models.JiraIssue).filter_by(jira_key="STORY-2").count(), 1
+        )
+
+    def test_milestone_bulk_link_dedupes_and_reports_missing(self) -> None:
+        self.fake.add("SNA-1")
+        self.fake.add("SNA-2")
+        jira_service.link_issue_to_milestone(
+            self.db, self.milestone_id, schemas.JiraLinkCreate(jira_key="SNA-1")
+        )
+        self.fake.search_calls.clear()
+
+        result = jira_service.link_issues_to_milestone(
+            self.db, self.milestone_id, ["SNA-1", "SNA-2", "SNA-2", "  ", "GHOST-9"]
+        )
+
+        self.assertEqual(result.linked, ["SNA-2"])
+        self.assertEqual(result.skipped, ["SNA-1"])
+        self.assertEqual(result.not_found, ["GHOST-9"])
+        self.assertEqual(self.db.query(models.MilestoneJiraLink).count(), 2)
+        # A whole label's worth of stories still costs one Jira search.
+        self.assertEqual(len(self.fake.search_calls), 1)
+
+    def test_milestone_bulk_link_rejects_unknown_milestone(self) -> None:
+        with self.assertRaises(ValueError):
+            jira_service.link_issues_to_milestone(self.db, 9999, ["SNA-1"])
+
+    def test_project_milestone_links_group_by_milestone(self) -> None:
+        second = models.Milestone(
+            deliverable_id=self.deliverable_id,
+            title="M2",
+            description="",
+            team_id=self.team_id,
+            target_date=date(2026, 8, 4),
+            status="planned",
+            progress=0,
+        )
+        self.db.add(second)
+        self.db.commit()
+
+        self._link_milestone(self.milestone_id, "SNA-1")
+        self._link_milestone(second.id, "SNA-2")
+
+        grouped = jira_service.list_project_milestone_links(
+            self.db, self.project_id, refresh_stale=False
+        )
+
+        self.assertEqual(grouped.project_id, self.project_id)
+        self.assertEqual(
+            {
+                milestone_id: [link.issue.key for link in links]
+                for milestone_id, links in grouped.links_by_milestone.items()
+            },
+            {self.milestone_id: ["SNA-1"], second.id: ["SNA-2"]},
+        )
+
+    def test_project_milestone_links_exclude_other_projects(self) -> None:
+        # The milestone reaches its project through its parent deliverable, so a
+        # wrong join here would leak another workspace's stories into the chart.
+        other = models.Project(name="P2", description="", color="#1d4ed8")
+        self.db.add(other)
+        self.db.flush()
+        other_team = models.Team(project_id=other.id, name="Other", color="#1d4ed8")
+        self.db.add(other_team)
+        self.db.flush()
+        other_deliverable = models.Deliverable(
+            project_id=other.id,
+            title="T2",
+            description="",
+            team_id=other_team.id,
+            planned_start=date(2026, 8, 1),
+            planned_end=date(2026, 8, 5),
+            status="planned",
+            progress=0,
+        )
+        self.db.add(other_deliverable)
+        self.db.flush()
+        other_milestone = models.Milestone(
+            deliverable_id=other_deliverable.id,
+            title="M-other",
+            description="",
+            team_id=other_team.id,
+            target_date=date(2026, 8, 3),
+            status="planned",
+            progress=0,
+        )
+        self.db.add(other_milestone)
+        self.db.commit()
+
+        self._link_milestone(self.milestone_id, "SNA-1")
+        self._link_milestone(other_milestone.id, "SNA-2")
+
+        grouped = jira_service.list_project_milestone_links(
+            self.db, self.project_id, refresh_stale=False
+        )
+
+        self.assertEqual(list(grouped.links_by_milestone), [self.milestone_id])
 
 
 class JiraLabelTests(unittest.TestCase):

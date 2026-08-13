@@ -558,39 +558,24 @@ def force_sync_project(db: Session, project_id: int) -> schemas.ProjectJiraLinks
     return list_project_links(db, project_id, refresh_stale=False)
 
 
-# ----------------------------------------------------------- deliverable links
+# ------------------------------------------------- work item links (generic core)
+# Deliverables and milestones both own Jira links, and the two link tables differ
+# only in their owner column. These helpers hold the shared behaviour — batched
+# fetch, dedupe, stale refresh — so each owner type only needs a thin wrapper.
 
 
-def list_deliverable_links(
-    db: Session, deliverable_id: int, refresh_stale: bool = True
-) -> List[schemas.DeliverableJiraLinkRead]:
-    deliverable = db.get(models.Deliverable, deliverable_id)
-    if deliverable is None:
-        raise ValueError("Deliverable not found.")
+class _LinkKind:
+    """How one owner type's Jira links are stored and read back."""
 
-    links = _load_deliverable_links(db, deliverable_id)
-    issues = [link.issue for link in links]
-    if issues and refresh_stale and _link_stale(issues):
-        try:
-            sync_keys(db, [issue.jira_key for issue in issues])
-        except JiraNotConfigured:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Stale refresh for deliverable %s failed: %s", deliverable_id, exc)
-        else:
-            links = _load_deliverable_links(db, deliverable_id)
+    def __init__(self, noun: str, owner_model, link_model, owner_column, read_factory):
+        self.noun = noun
+        self.owner_model = owner_model
+        self.link_model = link_model
+        self.owner_column = owner_column
+        self.read_factory = read_factory
 
-    return [_deliverable_link_read(link) for link in links]
-
-
-def _load_deliverable_links(db: Session, deliverable_id: int) -> List[models.DeliverableJiraLink]:
-    stmt = (
-        select(models.DeliverableJiraLink)
-        .where(models.DeliverableJiraLink.deliverable_id == deliverable_id)
-        .options(selectinload(models.DeliverableJiraLink.issue))
-        .order_by(models.DeliverableJiraLink.id)
-    )
-    return list(db.scalars(stmt))
+    def owner_id_of(self, link) -> int:
+        return getattr(link, self.owner_column.key)
 
 
 def _deliverable_link_read(link: models.DeliverableJiraLink) -> schemas.DeliverableJiraLinkRead:
@@ -602,12 +587,75 @@ def _deliverable_link_read(link: models.DeliverableJiraLink) -> schemas.Delivera
     )
 
 
-def link_issue_to_deliverable(
-    db: Session, deliverable_id: int, payload: schemas.JiraLinkCreate
-) -> schemas.DeliverableJiraLinkRead:
-    deliverable = db.get(models.Deliverable, deliverable_id)
-    if deliverable is None:
-        raise ValueError("Deliverable not found.")
+def _milestone_link_read(link: models.MilestoneJiraLink) -> schemas.MilestoneJiraLinkRead:
+    return schemas.MilestoneJiraLinkRead(
+        id=link.id,
+        milestone_id=link.milestone_id,
+        linked_at=link.linked_at,
+        issue=_issue_to_read(link.issue),
+    )
+
+
+_DELIVERABLE_LINKS = _LinkKind(
+    noun="Deliverable",
+    owner_model=models.Deliverable,
+    link_model=models.DeliverableJiraLink,
+    owner_column=models.DeliverableJiraLink.deliverable_id,
+    read_factory=_deliverable_link_read,
+)
+
+_MILESTONE_LINKS = _LinkKind(
+    noun="Milestone",
+    owner_model=models.Milestone,
+    link_model=models.MilestoneJiraLink,
+    owner_column=models.MilestoneJiraLink.milestone_id,
+    read_factory=_milestone_link_read,
+)
+
+
+def _load_links(db: Session, kind: _LinkKind, owner_id: int) -> List[Any]:
+    stmt = (
+        select(kind.link_model)
+        .where(kind.owner_column == owner_id)
+        .options(selectinload(kind.link_model.issue))
+        .order_by(kind.link_model.id)
+    )
+    return list(db.scalars(stmt))
+
+
+def _require_owner(db: Session, kind: _LinkKind, owner_id: int):
+    owner = db.get(kind.owner_model, owner_id)
+    if owner is None:
+        raise ValueError(f"{kind.noun} not found.")
+    return owner
+
+
+def _list_owner_links(
+    db: Session, kind: _LinkKind, owner_id: int, refresh_stale: bool = True
+) -> List[Any]:
+    _require_owner(db, kind, owner_id)
+
+    links = _load_links(db, kind, owner_id)
+    issues = [link.issue for link in links]
+    if issues and refresh_stale and _link_stale(issues):
+        try:
+            sync_keys(db, [issue.jira_key for issue in issues])
+        except JiraNotConfigured:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Stale refresh for %s %s failed: %s", kind.noun.lower(), owner_id, exc
+            )
+        else:
+            links = _load_links(db, kind, owner_id)
+
+    return [kind.read_factory(link) for link in links]
+
+
+def _link_one(
+    db: Session, kind: _LinkKind, owner_id: int, payload: schemas.JiraLinkCreate
+) -> Any:
+    _require_owner(db, kind, owner_id)
 
     fetched = sync_keys(db, [payload.jira_key])
     issue = fetched.get(payload.jira_key.upper()) or fetched.get(payload.jira_key)
@@ -615,36 +663,34 @@ def link_issue_to_deliverable(
         raise ValueError(f"Jira issue {payload.jira_key} was not found.")
 
     existing = db.scalar(
-        select(models.DeliverableJiraLink).where(
-            models.DeliverableJiraLink.deliverable_id == deliverable_id,
-            models.DeliverableJiraLink.jira_issue_id == issue.id,
+        select(kind.link_model).where(
+            kind.owner_column == owner_id,
+            kind.link_model.jira_issue_id == issue.id,
         )
     )
     if existing is not None:
-        return _deliverable_link_read(existing)
+        return kind.read_factory(existing)
 
-    link = models.DeliverableJiraLink(
-        deliverable_id=deliverable_id,
+    link = kind.link_model(
+        **{kind.owner_column.key: owner_id},
         jira_issue_id=issue.id,
         linked_at=datetime.utcnow(),
     )
     db.add(link)
     db.commit()
     db.refresh(link)
-    return _deliverable_link_read(link)
+    return kind.read_factory(link)
 
 
-def link_issues_to_deliverable(
-    db: Session, deliverable_id: int, jira_keys: Sequence[str]
+def _link_many(
+    db: Session, kind: _LinkKind, owner_id: int, jira_keys: Sequence[str]
 ) -> schemas.JiraBulkLinkResult:
-    """Link many Jira keys to one deliverable in a single Jira round trip.
+    """Link many Jira keys to one owner in a single Jira round trip.
 
     Linking a whole label's worth of stories one key at a time would mean one
     Jira search each; `sync_keys` already batches, so the fetch cost here is flat.
     """
-    deliverable = db.get(models.Deliverable, deliverable_id)
-    if deliverable is None:
-        raise ValueError("Deliverable not found.")
+    _require_owner(db, kind, owner_id)
 
     requested = list(dict.fromkeys((key or "").strip() for key in jira_keys))
     requested = [key for key in requested if key]
@@ -653,7 +699,7 @@ def link_issues_to_deliverable(
 
     fetched = sync_keys(db, requested)
     existing_issue_ids = {
-        link.jira_issue_id for link in _load_deliverable_links(db, deliverable_id)
+        link.jira_issue_id for link in _load_links(db, kind, owner_id)
     }
 
     result = schemas.JiraBulkLinkResult()
@@ -667,8 +713,8 @@ def link_issues_to_deliverable(
             result.skipped.append(issue.jira_key)
             continue
         db.add(
-            models.DeliverableJiraLink(
-                deliverable_id=deliverable_id,
+            kind.link_model(
+                **{kind.owner_column.key: owner_id},
                 jira_issue_id=issue.id,
                 linked_at=now,
             )
@@ -681,26 +727,36 @@ def link_issues_to_deliverable(
     return result
 
 
-def _load_project_deliverable_links(
-    db: Session, project_id: int
-) -> List[models.DeliverableJiraLink]:
+def _unlink(db: Session, kind: _LinkKind, owner_id: int, link_id: int) -> None:
+    link = db.get(kind.link_model, link_id)
+    if link is None or kind.owner_id_of(link) != owner_id:
+        raise ValueError("Link not found.")
+    db.delete(link)
+    db.commit()
+
+
+def _load_project_links_grouped(
+    db: Session, kind: _LinkKind, project_id: int, join_clauses
+) -> List[Any]:
+    stmt = select(kind.link_model)
+    for target, onclause in join_clauses:
+        stmt = stmt.join(target, onclause)
     stmt = (
-        select(models.DeliverableJiraLink)
-        .join(
-            models.Deliverable,
-            models.Deliverable.id == models.DeliverableJiraLink.deliverable_id,
-        )
-        .where(models.Deliverable.project_id == project_id)
-        .options(selectinload(models.DeliverableJiraLink.issue))
-        .order_by(models.DeliverableJiraLink.deliverable_id, models.DeliverableJiraLink.id)
+        stmt.where(models.Deliverable.project_id == project_id)
+        .options(selectinload(kind.link_model.issue))
+        .order_by(kind.owner_column, kind.link_model.id)
     )
     return list(db.scalars(stmt))
 
 
-def list_project_deliverable_links(
-    db: Session, project_id: int, refresh_stale: bool = True
-) -> schemas.ProjectDeliverableJiraLinks:
-    """Every deliverable's Jira links for one project, in a single round trip.
+def _group_project_links(
+    db: Session,
+    kind: _LinkKind,
+    project_id: int,
+    join_clauses,
+    refresh_stale: bool,
+) -> Tuple[Dict[int, List[Any]], bool, Optional[datetime]]:
+    """Every owner's Jira links for one project, in a single round trip.
 
     The Gantt story overlay would otherwise need one request per row.
     """
@@ -708,7 +764,7 @@ def list_project_deliverable_links(
     if project is None:
         raise ValueError("Project not found.")
 
-    links = _load_project_deliverable_links(db, project_id)
+    links = _load_project_links_grouped(db, kind, project_id, join_clauses)
     issues = [link.issue for link in links]
     stale = _link_stale(issues) if issues else False
     if stale and refresh_stale:
@@ -719,30 +775,113 @@ def list_project_deliverable_links(
         except Exception as exc:  # noqa: BLE001
             # Stale refresh is best-effort; surface data we already have.
             logger.warning(
-                "Stale refresh for project %s deliverable links failed: %s",
+                "Stale refresh for project %s %s links failed: %s",
                 project_id,
+                kind.noun.lower(),
                 exc,
             )
         else:
-            links = _load_project_deliverable_links(db, project_id)
+            links = _load_project_links_grouped(db, kind, project_id, join_clauses)
             issues = [link.issue for link in links]
             stale = False
 
-    grouped: Dict[int, List[schemas.DeliverableJiraLinkRead]] = {}
+    grouped: Dict[int, List[Any]] = {}
     for link in links:
-        grouped.setdefault(link.deliverable_id, []).append(_deliverable_link_read(link))
+        grouped.setdefault(kind.owner_id_of(link), []).append(kind.read_factory(link))
+    return grouped, stale, _latest_sync(issues)
 
+
+# ----------------------------------------------------------- deliverable links
+
+
+def list_deliverable_links(
+    db: Session, deliverable_id: int, refresh_stale: bool = True
+) -> List[schemas.DeliverableJiraLinkRead]:
+    return _list_owner_links(db, _DELIVERABLE_LINKS, deliverable_id, refresh_stale)
+
+
+def link_issue_to_deliverable(
+    db: Session, deliverable_id: int, payload: schemas.JiraLinkCreate
+) -> schemas.DeliverableJiraLinkRead:
+    return _link_one(db, _DELIVERABLE_LINKS, deliverable_id, payload)
+
+
+def link_issues_to_deliverable(
+    db: Session, deliverable_id: int, jira_keys: Sequence[str]
+) -> schemas.JiraBulkLinkResult:
+    return _link_many(db, _DELIVERABLE_LINKS, deliverable_id, jira_keys)
+
+
+def list_project_deliverable_links(
+    db: Session, project_id: int, refresh_stale: bool = True
+) -> schemas.ProjectDeliverableJiraLinks:
+    grouped, stale, synced_at = _group_project_links(
+        db,
+        _DELIVERABLE_LINKS,
+        project_id,
+        [
+            (
+                models.Deliverable,
+                models.Deliverable.id == models.DeliverableJiraLink.deliverable_id,
+            )
+        ],
+        refresh_stale,
+    )
     return schemas.ProjectDeliverableJiraLinks(
         project_id=project_id,
         links_by_deliverable=grouped,
         stale=stale,
-        synced_at=_latest_sync(issues),
+        synced_at=synced_at,
     )
 
 
 def unlink_deliverable_link(db: Session, deliverable_id: int, link_id: int) -> None:
-    link = db.get(models.DeliverableJiraLink, link_id)
-    if link is None or link.deliverable_id != deliverable_id:
-        raise ValueError("Link not found.")
-    db.delete(link)
-    db.commit()
+    _unlink(db, _DELIVERABLE_LINKS, deliverable_id, link_id)
+
+
+# ------------------------------------------------------------- milestone links
+
+
+def list_milestone_links(
+    db: Session, milestone_id: int, refresh_stale: bool = True
+) -> List[schemas.MilestoneJiraLinkRead]:
+    return _list_owner_links(db, _MILESTONE_LINKS, milestone_id, refresh_stale)
+
+
+def link_issue_to_milestone(
+    db: Session, milestone_id: int, payload: schemas.JiraLinkCreate
+) -> schemas.MilestoneJiraLinkRead:
+    return _link_one(db, _MILESTONE_LINKS, milestone_id, payload)
+
+
+def link_issues_to_milestone(
+    db: Session, milestone_id: int, jira_keys: Sequence[str]
+) -> schemas.JiraBulkLinkResult:
+    return _link_many(db, _MILESTONE_LINKS, milestone_id, jira_keys)
+
+
+def list_project_milestone_links(
+    db: Session, project_id: int, refresh_stale: bool = True
+) -> schemas.ProjectMilestoneJiraLinks:
+    # One join deeper than the deliverable case: a milestone reaches its project
+    # through its parent deliverable.
+    grouped, stale, synced_at = _group_project_links(
+        db,
+        _MILESTONE_LINKS,
+        project_id,
+        [
+            (models.Milestone, models.Milestone.id == models.MilestoneJiraLink.milestone_id),
+            (models.Deliverable, models.Deliverable.id == models.Milestone.deliverable_id),
+        ],
+        refresh_stale,
+    )
+    return schemas.ProjectMilestoneJiraLinks(
+        project_id=project_id,
+        links_by_milestone=grouped,
+        stale=stale,
+        synced_at=synced_at,
+    )
+
+
+def unlink_milestone_link(db: Session, milestone_id: int, link_id: int) -> None:
+    _unlink(db, _MILESTONE_LINKS, milestone_id, link_id)

@@ -536,6 +536,167 @@ button {
   background: rgba(255, 255, 255, 0.18);
 }
 
+/* --------------------------------------------------------------- milestones */
+
+.milestone-toggle {
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-strong);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.milestone-toggle:hover {
+  border-color: rgba(15, 118, 110, 0.45);
+}
+
+/* Shorter than a deliverable row: a marker needs far less vertical room than a
+   bar, and the sub-rows should read as detail under their parent. */
+.gantt-row.milestone-row,
+.milestone-row .timeline-grid {
+  min-height: 56px;
+}
+
+.milestone-row {
+  background: rgba(15, 23, 42, 0.02);
+}
+
+.milestone-row.editing {
+  background: rgba(15, 118, 110, 0.06);
+}
+
+.milestone-cell {
+  padding-left: 34px;
+}
+
+.milestone-cell-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.milestone-swatch {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  transform: rotate(45deg);
+}
+
+/* A rotated square, so a milestone never reads as a shortened bar. */
+.milestone-marker {
+  position: absolute;
+  top: 20px;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  border-radius: 3px;
+  transform: rotate(45deg);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.22);
+  cursor: pointer;
+  transition: transform 160ms ease;
+}
+
+.milestone-marker:hover {
+  transform: rotate(45deg) scale(1.18);
+}
+
+/* The actual date, drawn only when it differs from the target. */
+.milestone-marker.actual {
+  background: var(--success);
+}
+
+.milestone-marker.actual.slipped {
+  background: var(--danger);
+}
+
+.milestone-connector {
+  position: absolute;
+  top: 27px;
+  height: 2px;
+  background: repeating-linear-gradient(
+    to right,
+    rgba(185, 28, 28, 0.6) 0 6px,
+    transparent 6px 12px
+  );
+}
+
+.milestone-list {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.milestone-list-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-strong);
+}
+
+.milestone-list-row .team-dot {
+  margin-top: 4px;
+}
+
+.milestone-list-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.milestone-editor {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+}
+
+/* ------------------------------------------------------------ release marker */
+
+/* Repeats the row grid so the line lands in the same column the bars are
+   positioned against; the first cell is the (empty) workstream gutter. */
+.release-layer {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: 280px minmax(900px, 1fr);
+  pointer-events: none;
+}
+
+.release-layer-track {
+  position: relative;
+}
+
+.release-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 2px dashed rgba(15, 118, 110, 0.75);
+}
+
+.release-marker-label {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.92);
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
 .line-high {
   stroke: rgba(185, 28, 28, 0.92);
 }

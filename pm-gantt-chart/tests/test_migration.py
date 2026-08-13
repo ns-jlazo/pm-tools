@@ -4,7 +4,11 @@ import unittest
 
 from sqlalchemy import create_engine, inspect, text
 
-from app.main import _migrate_deliverable_rename, _migrate_example_flag
+from app.main import (
+    _migrate_deliverable_rename,
+    _migrate_example_flag,
+    _migrate_release_date,
+)
 
 
 # The v2 schema as it shipped before the deliverable rename, trimmed to the
@@ -260,5 +264,58 @@ class ExampleFlagMigrationTests(unittest.TestCase):
 
     def test_no_ops_when_projects_table_is_absent(self) -> None:
         _migrate_example_flag(self.engine)  # must not raise
+
+        self.assertEqual(set(inspect(self.engine).get_table_names()), set())
+
+
+class ReleaseDateMigrationTests(unittest.TestCase):
+    """`projects.release_date` is added in place, for the same reason as is_example."""
+
+    def setUp(self) -> None:
+        self.engine = create_engine(
+            "sqlite:///:memory:", connect_args={"check_same_thread": False}
+        )
+
+    def tearDown(self) -> None:
+        self.engine.dispose()
+
+    def _build_projects(self) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(text(_LEGACY_DDL[0]))  # projects without release_date
+            connection.execute(
+                text("INSERT INTO projects VALUES (1, 'Alpha', '', '#0f766e')")
+            )
+
+    def _columns(self) -> set:
+        return {column["name"] for column in inspect(self.engine).get_columns("projects")}
+
+    def test_adds_a_nullable_column_and_keeps_the_rows(self) -> None:
+        self._build_projects()
+
+        _migrate_release_date(self.engine)
+
+        self.assertIn("release_date", self._columns())
+        with self.engine.begin() as connection:
+            row = connection.execute(
+                text("SELECT name, release_date FROM projects")
+            ).one()
+        # Nullable, so existing workspaces have nothing to backfill.
+        self.assertEqual(tuple(row), ("Alpha", None))
+
+    def test_second_run_is_a_no_op(self) -> None:
+        self._build_projects()
+
+        _migrate_release_date(self.engine)
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE projects SET release_date = '2026-09-01'"))
+
+        _migrate_release_date(self.engine)  # must not raise or reset the value
+
+        with self.engine.begin() as connection:
+            stored = connection.execute(text("SELECT release_date FROM projects")).scalar_one()
+        self.assertEqual(stored, "2026-09-01")
+
+    def test_no_ops_when_projects_table_is_absent(self) -> None:
+        _migrate_release_date(self.engine)  # must not raise
 
         self.assertEqual(set(inspect(self.engine).get_table_names()), set())

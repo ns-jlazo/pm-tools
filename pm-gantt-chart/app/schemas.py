@@ -10,6 +10,8 @@ class ProjectCreate(BaseModel):
     description: str = ""
     color: str = Field(default="#0f766e", min_length=4, max_length=20)
     is_example: bool = False
+    # When the software becomes available to customers.
+    release_date: Optional[date] = None
 
 
 class ProjectUpdate(BaseModel):
@@ -17,6 +19,8 @@ class ProjectUpdate(BaseModel):
     description: Optional[str] = None
     color: Optional[str] = Field(default=None, min_length=4, max_length=20)
     is_example: Optional[bool] = None
+    # An explicit null clears the date — see `services.update_project`.
+    release_date: Optional[date] = None
 
 
 class ProjectRead(ProjectCreate):
@@ -62,6 +66,53 @@ class TeamRef(BaseModel):
     color: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class MilestoneBase(BaseModel):
+    """A piece of a deliverable. One target date, not a planned/current window."""
+
+    title: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    team_id: int
+    target_date: date
+    actual_date: Optional[date] = None
+    status: str = Field(default="planned", max_length=30)
+    progress: int = Field(default=0, ge=0, le=100)
+
+
+class MilestoneCreate(MilestoneBase):
+    jira_keys: List[str] = Field(default_factory=list)
+
+
+class MilestoneUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = None
+    team_id: Optional[int] = None
+    target_date: Optional[date] = None
+    # An explicit null clears the date — see `services.update_milestone`.
+    actual_date: Optional[date] = None
+    status: Optional[str] = Field(default=None, max_length=30)
+    progress: Optional[int] = Field(default=None, ge=0, le=100)
+
+
+class MilestoneRead(BaseModel):
+    id: int
+    deliverable_id: int
+    project_id: int
+    title: str
+    description: str
+    team_id: int
+    # Denormalized like DeliverableRead so the timeline can color a milestone
+    # marker by its owning team without a second lookup.
+    team_name: str
+    team_color: str
+    target_date: date
+    actual_date: Optional[date]
+    status: str
+    progress: int
+    slipped: bool
+    slip_days: int
+    risk_level: str
 
 
 class DeliverableBase(BaseModel):
@@ -119,7 +170,11 @@ class DeliverableRead(BaseModel):
     risk_level: str
     delay_days: int
     dependency_slip_days: int
+    milestone_slip_days: int
     risk_reasons: List[str]
+    # Embedded rather than fetched per row: the timeline renders milestone
+    # sub-rows straight from the dashboard payload.
+    milestones: List[MilestoneRead] = Field(default_factory=list)
 
 
 class DashboardSummary(BaseModel):
@@ -241,6 +296,13 @@ class ProjectJiraLinksGrouped(BaseModel):
     synced_at: Optional[datetime] = None
 
 
+class MilestoneJiraLinkRead(BaseModel):
+    id: int
+    milestone_id: int
+    linked_at: datetime
+    issue: JiraIssueRead
+
+
 class ProjectDeliverableJiraLinks(BaseModel):
     """Every deliverable's Jira links for one project, keyed by deliverable id.
 
@@ -250,6 +312,21 @@ class ProjectDeliverableJiraLinks(BaseModel):
 
     project_id: int
     links_by_deliverable: Dict[int, List[DeliverableJiraLinkRead]] = Field(
+        default_factory=dict
+    )
+    stale: bool = False
+    synced_at: Optional[datetime] = None
+
+
+class ProjectMilestoneJiraLinks(BaseModel):
+    """Every milestone's Jira links for one project, keyed by milestone id.
+
+    The milestone counterpart of ProjectDeliverableJiraLinks, so the timeline
+    overlay stays at one request for the whole chart.
+    """
+
+    project_id: int
+    links_by_milestone: Dict[int, List[MilestoneJiraLinkRead]] = Field(
         default_factory=dict
     )
     stale: bool = False

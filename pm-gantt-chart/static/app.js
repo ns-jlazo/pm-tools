@@ -13,7 +13,13 @@ const TOAST_FADE_MS = 400;
 const ISSUE_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 const STATUS_FILTER_PREFIX = "pm-tool.jira-status-filter.";
 const GANTT_JIRA_PREFIX = "pm-tool.gantt-jira.";
-const DEFAULT_PROJECT = { name: "", description: "", color: "#0f766e", is_example: false };
+const DEFAULT_PROJECT = {
+  name: "",
+  description: "",
+  color: "#0f766e",
+  is_example: false,
+  release_date: "",
+};
 const DEFAULT_DELIVERABLE = {
   title: "",
   description: "",
@@ -26,6 +32,18 @@ const DEFAULT_DELIVERABLE = {
   progress: 0,
   dependency_ids: [],
   contributor_team_ids: [],
+  jira_keys: [],
+};
+// A milestone is a piece of a deliverable: one target date instead of a
+// planned/current window, and no dependencies or contributing teams.
+const DEFAULT_MILESTONE = {
+  title: "",
+  description: "",
+  team_id: "",
+  target_date: "",
+  actual_date: "",
+  status: "planned",
+  progress: 0,
   jira_keys: [],
 };
 
@@ -134,11 +152,23 @@ function progressFromIssues(issues) {
   return Math.round((all.filter(isInProgressIssue).length / all.length) * 100);
 }
 
-// Progress from the stories linked to a saved deliverable *right now*. Same
+// Deliverables and milestones both own Jira links, on endpoints that differ only
+// in this path segment. Everything that reads or links stories takes the scope so
+// one component can serve both.
+const WORK_ITEM_SCOPES = {
+  deliverables: { noun: "deliverable", label: "deliverable" },
+  milestones: { noun: "milestone", label: "milestone" },
+};
+
+function scopeNoun(scope) {
+  return (WORK_ITEM_SCOPES[scope] || WORK_ITEM_SCOPES.deliverables).noun;
+}
+
+// Progress from the stories linked to a saved work item *right now*. Same
 // share-underway formula and the same denominator as the label prefill: every
 // linked story counts, Done included.
-async function progressFromDeliverableLinks(deliverableId) {
-  const links = await api(`/api/deliverables/${deliverableId}/jira`);
+async function progressFromWorkItemLinks(scope, itemId) {
+  const links = await api(`/api/${scope}/${itemId}/jira`);
   return {
     total: links.length,
     progress: progressFromIssues(links.map((link) => link.issue)),
@@ -1125,8 +1155,12 @@ function isFlatGrouping(groups) {
   return groups.length <= 1 && (!groups.length || groups[0].team === null);
 }
 
-function JiraDeliverableLinks({
-  deliverableId,
+// Serves both a deliverable (`scope="deliverables"`) and a milestone
+// (`scope="milestones"`) — the link endpoints are identical apart from the path
+// segment, and the picker below was already generic.
+function JiraWorkItemLinks({
+  scope = "deliverables",
+  itemId,
   onMessage,
   epicKeys,
   statusFilter,
@@ -1141,12 +1175,13 @@ function JiraDeliverableLinks({
   const [showPicker, setShowPicker] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [pickerError, setPickerError] = useState("");
+  const noun = scopeNoun(scope);
 
   const load = async () => {
-    if (!deliverableId) return;
+    if (!itemId) return;
     setLoading(true);
     try {
-      const payload = await api(`/api/deliverables/${deliverableId}/jira`);
+      const payload = await api(`/api/${scope}/${itemId}/jira`);
       setLinks(payload);
       if (statusFilter) statusFilter.registerStatuses(payload.map((link) => link.issue));
     } catch (err) {
@@ -1159,7 +1194,7 @@ function JiraDeliverableLinks({
   useEffect(() => {
     setLinks([]);
     load();
-  }, [deliverableId]);
+  }, [scope, itemId]);
 
   const notifyLinked = () => {
     if (typeof onLinked === "function") onLinked();
@@ -1169,12 +1204,12 @@ function JiraDeliverableLinks({
     setSubmitting(true);
     setPickerError("");
     try {
-      await api(`/api/deliverables/${deliverableId}/jira/links`, {
+      await api(`/api/${scope}/${itemId}/jira/links`, {
         method: "POST",
         body: JSON.stringify(payload),
       });
       setShowPicker(false);
-      onMessage(`Linked ${payload.jira_key} to deliverable.`, "success");
+      onMessage(`Linked ${payload.jira_key} to ${noun}.`, "success");
       await load();
       notifyLinked();
     } catch (err) {
@@ -1185,18 +1220,18 @@ function JiraDeliverableLinks({
   };
 
   // One request for a whole label's worth of stories. `progress` is the share of
-  // those stories that are underway, offered as a starting value for the
-  // deliverable's editable progress field.
+  // those stories that are underway, offered as a starting value for the work
+  // item's editable progress field.
   const linkMany = async (keys, progress) => {
     setSubmitting(true);
     setPickerError("");
     try {
-      const result = await api(`/api/deliverables/${deliverableId}/jira/links/bulk`, {
+      const result = await api(`/api/${scope}/${itemId}/jira/links/bulk`, {
         method: "POST",
         body: JSON.stringify({ jira_keys: keys }),
       });
       setShowPicker(false);
-      const parts = [`Linked ${result.linked.length} story(s) to deliverable.`];
+      const parts = [`Linked ${result.linked.length} story(s) to ${noun}.`];
       if (result.skipped.length) parts.push(`${result.skipped.length} already linked.`);
       if (result.not_found.length) parts.push(`Not found: ${result.not_found.join(", ")}.`);
       if (progress !== null && progress !== undefined && typeof onProgressSuggested === "function") {
@@ -1216,7 +1251,7 @@ function JiraDeliverableLinks({
   const unlink = async (link) => {
     setLoading(true);
     try {
-      await api(`/api/deliverables/${deliverableId}/jira/links/${link.id}`, { method: "DELETE" });
+      await api(`/api/${scope}/${itemId}/jira/links/${link.id}`, { method: "DELETE" });
       onMessage(`Unlinked ${link.issue.key}.`, "success");
       await load();
       notifyLinked();
@@ -1281,11 +1316,11 @@ function JiraDeliverableLinks({
                   </div>
                 `
               )
-          : html`<div className="help-text">No Jira stories linked to this deliverable yet.</div>`}
+          : html`<div className="help-text">No Jira stories linked to this ${noun} yet.</div>`}
       ${showPicker
         ? html`
             <${JiraPickerModal}
-              title="Link Jira story to deliverable"
+              title=${`Link Jira story to ${noun}`}
               teams=${null}
               onClose=${() => setShowPicker(false)}
               onLink=${linkIssue}
@@ -1317,6 +1352,33 @@ function deliverableToForm(deliverable) {
     dependency_ids: deliverable.dependency_ids.map(String),
     contributor_team_ids: (deliverable.contributor_team_ids || []).map(String),
     jira_keys: [],
+  };
+}
+
+function milestoneToForm(milestone) {
+  return {
+    title: milestone.title,
+    description: milestone.description || "",
+    team_id: String(milestone.team_id),
+    target_date: milestone.target_date,
+    actual_date: milestone.actual_date || "",
+    status: milestone.status,
+    progress: milestone.progress,
+    jira_keys: [],
+  };
+}
+
+// An empty actual date means "not landed yet", which the API takes as an explicit
+// null; a milestone with no actual date never reads as slipped.
+function milestonePayload(form) {
+  return {
+    title: form.title,
+    description: form.description || "",
+    team_id: Number(form.team_id),
+    target_date: form.target_date,
+    actual_date: form.actual_date || null,
+    status: form.status,
+    progress: Number(form.progress),
   };
 }
 
@@ -1535,6 +1597,19 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
               <label htmlFor="project-color">Accent color</label>
               <input id="project-color" type="color" value=${projectForm.color} onInput=${(event) => setProjectForm({ ...projectForm, color: event.target.value })} />
             </div>
+            <div className="field">
+              <label htmlFor="project-release-date">Release date</label>
+              <input
+                id="project-release-date"
+                type="date"
+                value=${projectForm.release_date}
+                onInput=${(event) => setProjectForm({ ...projectForm, release_date: event.target.value })}
+              />
+              <span className="help-text">
+                Optional — when the software becomes available to customers. It is drawn as a
+                marker on the Timeline Overview.
+              </span>
+            </div>
             <div className="field-wide">
               <label className="checkbox-field" htmlFor="project-is-example">
                 <input
@@ -1559,20 +1634,21 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
   `;
 }
 
-// Re-derives Progress % from the deliverable's linked stories on demand — the
+// Re-derives Progress % from the work item's linked stories on demand — the
 // "By label" prefill only fires at link time, so this is the way to pick up Jira
 // movement afterwards. It fills the still-editable field; saving is up to the user.
 // Render it as a sibling of the Progress label, never inside it: a button inside a
 // <label> forwards its click to the labelled input.
-function RecalcProgressButton({ deliverableId, onProgress, onMessage }) {
+function RecalcProgressButton({ scope = "deliverables", itemId, onProgress, onMessage }) {
   const [working, setWorking] = useState(false);
+  const noun = scopeNoun(scope);
 
   const recalc = async () => {
     setWorking(true);
     try {
-      const { total, progress } = await progressFromDeliverableLinks(deliverableId);
+      const { total, progress } = await progressFromWorkItemLinks(scope, itemId);
       if (!total) {
-        onMessage("No Jira stories linked to this deliverable yet — nothing to recalculate.", "error");
+        onMessage(`No Jira stories linked to this ${noun} yet — nothing to recalculate.`, "error");
         return;
       }
       onProgress(progress);
@@ -1594,7 +1670,7 @@ function RecalcProgressButton({ deliverableId, onProgress, onMessage }) {
       onClick=${recalc}
       disabled=${working}
       aria-busy=${working}
-      title="Recalculate from the Jira stories linked to this deliverable"
+      title=${`Recalculate from the Jira stories linked to this ${noun}`}
     >${working ? "Recalculating…" : "Recalculate from Jira"}</button>
   `;
 }
@@ -1718,7 +1794,7 @@ function DeliverableForm({
           <input id=${`${submitLabel}-progress`} type="number" min="0" max="100" value=${form.progress} onInput=${handleField("progress")} />
           ${deliverableId
             ? html`<${RecalcProgressButton}
-                deliverableId=${deliverableId}
+                itemId=${deliverableId}
                 onProgress=${(value) => setForm((current) => ({ ...current, progress: value }))}
                 onMessage=${onMessage}
               />`
@@ -1845,6 +1921,399 @@ function DeliverableForm({
   `;
 }
 
+// Deliberately narrower than DeliverableForm: a milestone has one target date
+// (plus the date it actually landed on), and no dependencies or contributing
+// teams — those stay a property of the parent deliverable.
+function MilestoneForm({
+  teams,
+  form,
+  setForm,
+  onSubmit,
+  submitLabel,
+  submitting,
+  idPrefix,
+  showJiraPicker,
+  epicKeys,
+  statusFilter,
+  milestoneId,
+  onMessage,
+}) {
+  const handleField = (key) => (event) => setForm({ ...form, [key]: event.target.value });
+  const [showPicker, setShowPicker] = useState(false);
+  const [pickerError, setPickerError] = useState("");
+  const fieldId = (name) => `${idPrefix}-${name}`;
+
+  const pendingKeys = form.jira_keys || [];
+  const appendPendingJira = (payload) => {
+    const key = (payload.jira_key || "").trim().toUpperCase();
+    if (!key) {
+      setShowPicker(false);
+      return;
+    }
+    if (!pendingKeys.includes(key)) setForm({ ...form, jira_keys: [...pendingKeys, key] });
+    setShowPicker(false);
+  };
+  const appendPendingJiraKeys = (keys, progress) => {
+    const next = [...pendingKeys];
+    for (const raw of keys || []) {
+      const key = (raw || "").trim().toUpperCase();
+      if (key && !next.includes(key)) next.push(key);
+    }
+    const seeded = progress === null || progress === undefined ? {} : { progress };
+    setForm({ ...form, jira_keys: next, ...seeded });
+    setShowPicker(false);
+  };
+  const removePendingJira = (key) => {
+    setForm({ ...form, jira_keys: pendingKeys.filter((existing) => existing !== key) });
+  };
+
+  return html`
+    <form onSubmit=${onSubmit}>
+      <div className="form-grid">
+        <div className="field-wide">
+          <label htmlFor=${fieldId("title")}>Title</label>
+          <input id=${fieldId("title")} value=${form.title} onInput=${handleField("title")} required />
+        </div>
+
+        <div className="field">
+          <label htmlFor=${fieldId("team")}>Owning team</label>
+          <select id=${fieldId("team")} value=${form.team_id} onChange=${handleField("team_id")} required>
+            <option value="">Select a team</option>
+            ${teams.map((team) => html`<option key=${team.id} value=${team.id}>${team.name}</option>`)}
+          </select>
+          <span className="help-text">
+            Any team on the project can own a milestone, not just the deliverable's own team.
+          </span>
+        </div>
+
+        <div className="field">
+          <label htmlFor=${fieldId("status")}>Status</label>
+          <select id=${fieldId("status")} value=${form.status} onChange=${handleField("status")}>
+            ${STATUS_OPTIONS.map(
+              (status) => html`<option key=${status} value=${status}>${humanizeStatus(status)}</option>`
+            )}
+          </select>
+        </div>
+
+        <div className="field">
+          <label htmlFor=${fieldId("target-date")}>Target date</label>
+          <input
+            id=${fieldId("target-date")}
+            type="date"
+            value=${form.target_date}
+            onInput=${handleField("target_date")}
+            required
+          />
+        </div>
+
+        <div className="field">
+          <label htmlFor=${fieldId("actual-date")}>Actual date</label>
+          <input
+            id=${fieldId("actual-date")}
+            type="date"
+            value=${form.actual_date}
+            onInput=${handleField("actual_date")}
+          />
+          <span className="help-text">
+            Leave empty while it is still open — an actual date after the target counts as a slip.
+          </span>
+        </div>
+
+        <div className="field">
+          <label htmlFor=${fieldId("progress")}>Progress %</label>
+          <input
+            id=${fieldId("progress")}
+            type="number"
+            min="0"
+            max="100"
+            value=${form.progress}
+            onInput=${handleField("progress")}
+          />
+          ${milestoneId
+            ? html`<${RecalcProgressButton}
+                scope="milestones"
+                itemId=${milestoneId}
+                onProgress=${(value) => setForm((current) => ({ ...current, progress: value }))}
+                onMessage=${onMessage}
+              />`
+            : null}
+        </div>
+
+        <div className="field-wide">
+          <label htmlFor=${fieldId("description")}>Description</label>
+          <textarea
+            id=${fieldId("description")}
+            rows="4"
+            value=${form.description}
+            onInput=${handleField("description")}
+          ></textarea>
+          <span className="help-text">${DESCRIPTION_HINT}</span>
+        </div>
+      </div>
+
+      ${showJiraPicker
+        ? html`
+            <div className="jira-pending">
+              <div className="jira-pending-header">
+                <strong>Jira stories to link on create</strong>
+                <button
+                  className="button-secondary"
+                  type="button"
+                  onClick=${() => { setPickerError(""); setShowPicker(true); }}
+                >Pick Jira story</button>
+              </div>
+              ${pendingKeys.length
+                ? html`
+                    <div className="jira-chip-row">
+                      ${pendingKeys.map(
+                        (key) => html`
+                          <div className="jira-chip" key=${key}>
+                            <span>${key}</span>
+                            <button
+                              type="button"
+                              className="jira-chip-remove"
+                              onClick=${() => removePendingJira(key)}
+                              aria-label=${`Remove ${key}`}
+                            >×</button>
+                          </div>
+                        `
+                      )}
+                    </div>
+                  `
+                : html`<div className="help-text">
+                    None yet — pick stories to link automatically after save.
+                  </div>`}
+            </div>
+          `
+        : null}
+
+      <div className="actions">
+        <button className="button-primary" type="submit" disabled=${submitting} aria-busy=${submitting}>
+          ${submitLabel}
+        </button>
+      </div>
+
+      ${showPicker
+        ? html`
+            <${JiraPickerModal}
+              title="Pick a Jira story to link on create"
+              teams=${null}
+              onClose=${() => setShowPicker(false)}
+              onLink=${appendPendingJira}
+              onLinkMany=${appendPendingJiraKeys}
+              submitting=${false}
+              error=${pickerError}
+              setError=${setPickerError}
+              epicKeys=${epicKeys}
+              statusFilter=${statusFilter}
+              linkedKeys=${pendingKeys}
+            />
+          `
+        : null}
+    </form>
+  `;
+}
+
+// The parent-deliverable selector is where "a milestone cannot exist without a
+// deliverable" is enforced in the UI: with no deliverables there is nothing to
+// pick and the panel offers no create form at all.
+function MilestonePanel({
+  deliverables,
+  teams,
+  actions,
+  onMessage,
+  submitting,
+  epicKeys,
+  epicTeams,
+  statusFilter,
+}) {
+  const [parentId, setParentId] = useState(
+    deliverables[0] ? String(deliverables[0].id) : ""
+  );
+  const [createForm, setCreateForm] = useState({
+    ...DEFAULT_MILESTONE,
+    team_id: teams[0] ? String(teams[0].id) : "",
+  });
+  const [editingId, setEditingId] = useState("");
+  const [editForm, setEditForm] = useState(DEFAULT_MILESTONE);
+
+  // A deliverable can be deleted from under the selection, and the ids only
+  // arrive once the dashboard has loaded.
+  useEffect(() => {
+    const stillThere = deliverables.some((item) => String(item.id) === parentId);
+    if (!stillThere) setParentId(deliverables[0] ? String(deliverables[0].id) : "");
+  }, [deliverables]);
+
+  const parent = deliverables.find((item) => String(item.id) === parentId);
+  const milestones = (parent && parent.milestones) || [];
+  const editing = milestones.find((item) => String(item.id) === editingId);
+
+  // Keep the open editor in step with a refreshed dashboard, the way the
+  // deliverable edit form does.
+  useEffect(() => {
+    if (editing) setEditForm(milestoneToForm(editing));
+    else if (editingId) setEditingId("");
+  }, [editing && editing.id, editing && editing.target_date, editing && editing.actual_date,
+      editing && editing.status, editing && editing.progress]);
+
+  if (!deliverables.length) {
+    return html`
+      <article className="panel">
+        <h2>Milestones</h2>
+        <p className="panel-copy">
+          Milestones break a deliverable into pieces that any team can own.
+        </p>
+        <div className="empty-state">
+          Create a deliverable first — every milestone belongs to one.
+        </div>
+      </article>
+    `;
+  }
+
+  const submitCreate = async (event) => {
+    event.preventDefault();
+    const ok = await actions.create(Number(parentId), {
+      ...milestonePayload(createForm),
+      jira_keys: createForm.jira_keys || [],
+    });
+    if (ok) {
+      setCreateForm({
+        ...DEFAULT_MILESTONE,
+        team_id: teams[0] ? String(teams[0].id) : "",
+      });
+    }
+  };
+
+  const submitEdit = async (event) => {
+    event.preventDefault();
+    const ok = await actions.update(Number(editingId), milestonePayload(editForm));
+    if (ok) setEditingId("");
+  };
+
+  return html`
+    <article className="panel">
+      <h2>Milestones</h2>
+      <p className="panel-copy">
+        Milestones break a deliverable into pieces that any team can own, each with its own
+        target date and Jira stories. A slipped milestone raises its parent's risk.
+      </p>
+
+      <div className="field-wide">
+        <label htmlFor="milestone-parent">Parent deliverable</label>
+        <select
+          id="milestone-parent"
+          value=${parentId}
+          onChange=${(event) => { setParentId(event.target.value); setEditingId(""); }}
+        >
+          ${deliverables.map(
+            (deliverable) => html`
+              <option key=${deliverable.id} value=${deliverable.id}>${deliverable.title}</option>
+            `
+          )}
+        </select>
+      </div>
+
+      <div className="milestone-list">
+        ${milestones.length
+          ? milestones.map(
+              (milestone) => html`
+                <div className="milestone-list-row" key=${milestone.id}>
+                  <span className="team-dot" style=${{ background: milestone.team_color }}></span>
+                  <div>
+                    <strong>${milestone.title}</strong>
+                    <div className="task-meta">
+                      <span className="tiny-pill">${milestone.team_name}</span>
+                      <span className="tiny-pill">
+                        Target: ${formatDisplayDate(milestone.target_date)}
+                      </span>
+                      ${milestone.actual_date
+                        ? html`<span className="tiny-pill">
+                            Actual: ${formatDisplayDate(milestone.actual_date)}
+                          </span>`
+                        : null}
+                      <span className="tiny-pill">${humanizeStatus(milestone.status)}</span>
+                      <span className="tiny-pill">${milestone.progress}%</span>
+                      ${milestone.slipped
+                        ? html`<span className="risk-badge high">
+                            Slipped ${milestone.slip_days}d
+                          </span>`
+                        : null}
+                    </div>
+                  </div>
+                  <div className="milestone-list-actions">
+                    <button
+                      className="button-secondary"
+                      type="button"
+                      disabled=${submitting}
+                      onClick=${() =>
+                        setEditingId(String(milestone.id) === editingId ? "" : String(milestone.id))}
+                    >${String(milestone.id) === editingId ? "Close" : "Edit"}</button>
+                    <button
+                      className="button-secondary"
+                      type="button"
+                      disabled=${submitting}
+                      onClick=${() => actions.remove(milestone.id)}
+                    >Remove</button>
+                  </div>
+                </div>
+              `
+            )
+          : html`<div className="empty-state">
+              No milestones on this deliverable yet — add one below.
+            </div>`}
+      </div>
+
+      ${editing
+        ? html`
+            <div className="milestone-editor">
+              <strong>Edit “${editing.title}”</strong>
+              <${MilestoneForm}
+                teams=${teams}
+                form=${editForm}
+                setForm=${setEditForm}
+                onSubmit=${submitEdit}
+                submitLabel="Save milestone"
+                submitting=${submitting}
+                idPrefix="milestone-edit"
+                showJiraPicker=${false}
+                milestoneId=${editing.id}
+                onMessage=${onMessage}
+              />
+              <${JiraWorkItemLinks}
+                scope="milestones"
+                itemId=${editing.id}
+                onMessage=${onMessage}
+                epicKeys=${epicKeys}
+                statusFilter=${statusFilter}
+                onProgressSuggested=${(value) =>
+                  setEditForm((current) => ({ ...current, progress: value }))}
+                teams=${teams}
+                epicTeams=${epicTeams}
+              />
+            </div>
+          `
+        : null}
+
+      <div className="milestone-editor">
+        <strong>Add a milestone to “${parent ? parent.title : ""}”</strong>
+        <${MilestoneForm}
+          teams=${teams}
+          form=${createForm}
+          setForm=${setCreateForm}
+          onSubmit=${submitCreate}
+          submitLabel="Create milestone"
+          submitting=${submitting}
+          idPrefix="milestone-create"
+          showJiraPicker=${true}
+          epicKeys=${epicKeys}
+          statusFilter=${statusFilter}
+          onMessage=${onMessage}
+        />
+      </div>
+    </article>
+  `;
+}
+
 function InlineEditPopover({
   deliverable,
   form,
@@ -1902,7 +2371,7 @@ function InlineEditPopover({
             <input type="number" min="0" max="100" value=${form.progress} onInput=${handleField("progress")} />
           </label>
           <${RecalcProgressButton}
-            deliverableId=${deliverable.id}
+            itemId=${deliverable.id}
             onProgress=${(value) => setForm((current) => ({ ...current, progress: value }))}
             onMessage=${onMessage}
           />
@@ -1925,14 +2394,89 @@ function InlineEditPopover({
           >Save</button>
           <button className="button-secondary" type="button" onClick=${onCancel}>Cancel</button>
         </div>
-        <${JiraDeliverableLinks}
-          deliverableId=${deliverable.id}
+        <${JiraWorkItemLinks}
+          itemId=${deliverable.id}
           onMessage=${onMessage}
           epicKeys=${epicKeys}
           statusFilter=${statusFilter}
           onLinked=${onLinksChanged}
           onProgressSuggested=${(value) =>
             setForm((current) => ({ ...current, progress: value }))}
+          teams=${teams}
+          epicTeams=${epicTeams}
+          compact=${true}
+        />
+      </div>
+    </div>
+  `,
+    document.body
+  );
+}
+
+// Same portal/Esc handling as InlineEditPopover, opened by clicking a diamond on
+// the timeline. It hosts the full MilestoneForm because a milestone is small
+// enough to edit whole.
+function MilestoneEditPopover({
+  milestone,
+  teams,
+  form,
+  setForm,
+  onSave,
+  onCancel,
+  submitting,
+  onMessage,
+  epicKeys,
+  statusFilter,
+  onLinksChanged,
+  epicTeams,
+}) {
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      if (document.querySelector(".jira-modal-backdrop:not(.inline-modal-backdrop)")) return;
+      onCancel();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onCancel]);
+
+  return createPortal(
+    html`
+    <div
+      className="jira-modal-backdrop inline-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      onClick=${onCancel}
+    >
+      <div className="jira-modal inline-modal" onClick=${(event) => event.stopPropagation()}>
+        <header className="jira-modal-header">
+          <h3>Milestone: ${milestone.title}</h3>
+          <button className="button-secondary" type="button" onClick=${onCancel}>Close</button>
+        </header>
+        <p className="help-text">
+          Part of ${milestone.deliverable_title || "its deliverable"} — a slip here raises that
+          deliverable's risk, but its progress % stays its own.
+        </p>
+        <${MilestoneForm}
+          teams=${teams}
+          form=${form}
+          setForm=${setForm}
+          onSubmit=${onSave}
+          submitLabel="Save milestone"
+          submitting=${submitting}
+          idPrefix="milestone-inline"
+          showJiraPicker=${false}
+          milestoneId=${milestone.id}
+          onMessage=${onMessage}
+        />
+        <${JiraWorkItemLinks}
+          scope="milestones"
+          itemId=${milestone.id}
+          onMessage=${onMessage}
+          epicKeys=${epicKeys}
+          statusFilter=${statusFilter}
+          onLinked=${onLinksChanged}
+          onProgressSuggested=${(value) => setForm((current) => ({ ...current, progress: value }))}
           teams=${teams}
           epicTeams=${epicTeams}
           compact=${true}
@@ -2038,6 +2582,72 @@ function GanttStoryList({ links, statusFilter, teams, epicTeams }) {
   `;
 }
 
+// A milestone has one date, so it draws a marker rather than a bar. When it
+// landed on a different day than planned both markers are drawn with a connector
+// between them, which is what makes the slip readable at a glance.
+function GanttMilestoneRow({ milestone, timeline, isEditing, onOpen }) {
+  const totalDays = Math.max(differenceInDays(timeline.start, timeline.end), 1);
+  const percentFor = (value) =>
+    (differenceInDays(timeline.start, startOfDay(value)) / totalDays) * 100;
+  const targetLeft = percentFor(milestone.target_date);
+  const actualLeft = milestone.actual_date ? percentFor(milestone.actual_date) : null;
+  const drift = actualLeft !== null && Math.abs(actualLeft - targetLeft) > 0.01;
+  const dates = milestone.actual_date
+    ? `${formatDisplayDate(milestone.target_date)} → ${formatDisplayDate(milestone.actual_date)}`
+    : formatDisplayDate(milestone.target_date);
+  const tooltip = milestone.slipped
+    ? `${milestone.title} — slipped by ${milestone.slip_days} day(s) (${dates})`
+    : `${milestone.title} — ${dates}`;
+
+  return html`
+    <div className=${`gantt-row milestone-row ${isEditing ? "editing" : ""}`}>
+      <div className="task-cell milestone-cell">
+        <div className="milestone-cell-title">
+          <span className="milestone-swatch" style=${{ background: milestone.team_color }}></span>
+          <strong>${milestone.title}</strong>
+        </div>
+        <div className="task-meta">
+          <span className="tiny-pill">${milestone.team_name}</span>
+          <span className="tiny-pill">${dates}</span>
+          <span className="tiny-pill">${milestone.progress}%</span>
+          ${milestone.slipped
+            ? html`<span className="risk-badge high">Slipped ${milestone.slip_days}d</span>`
+            : null}
+        </div>
+      </div>
+      <div className="timeline-grid milestone-grid" style=${{ "--days": timeline.days.length }}>
+        ${drift
+          ? html`<div
+              className="milestone-connector"
+              style=${{
+                left: `${Math.min(targetLeft, actualLeft)}%`,
+                width: `${Math.abs(actualLeft - targetLeft)}%`,
+              }}
+            ></div>`
+          : null}
+        <button
+          type="button"
+          className="milestone-marker target"
+          style=${{ left: `${targetLeft}%`, background: milestone.team_color }}
+          title=${tooltip}
+          aria-label=${tooltip}
+          onClick=${() => onOpen(milestone)}
+        ></button>
+        ${drift
+          ? html`<button
+              type="button"
+              className=${`milestone-marker actual ${milestone.slipped ? "slipped" : ""}`}
+              style=${{ left: `${actualLeft}%` }}
+              title=${tooltip}
+              aria-label=${`${tooltip} (actual)`}
+              onClick=${() => onOpen(milestone)}
+            ></button>`
+          : null}
+      </div>
+    </div>
+  `;
+}
+
 function GanttRow({
   deliverable,
   timeline,
@@ -2049,6 +2659,10 @@ function GanttRow({
   statusFilter,
   teams,
   epicTeams,
+  milestonesExpanded,
+  onToggleMilestones,
+  editingMilestoneId,
+  onOpenMilestone,
 }) {
   const start = startOfDay(deliverable.current_start || deliverable.planned_start);
   const end = startOfDay(deliverable.current_end || deliverable.planned_end);
@@ -2062,8 +2676,10 @@ function GanttRow({
     : deliverable.at_risk
       ? "linear-gradient(120deg, #b45309, #ea580c)"
       : `linear-gradient(120deg, ${deliverable.team_color}, #0f172a)`;
+  const milestones = deliverable.milestones || [];
 
   return html`
+    <>
     <div className="gantt-row">
       <div className="task-cell">
         <strong>${deliverable.title}</strong>
@@ -2073,6 +2689,19 @@ function GanttRow({
           <span className="tiny-pill">Plan: ${formatDisplayDate(deliverable.planned_start)} - ${formatDisplayDate(deliverable.planned_end)}</span>
           ${deliverable.at_risk ? html`<span className="tiny-pill">Risk: ${deliverable.risk_level}</span>` : null}
         </div>
+        ${milestones.length
+          ? html`
+              <button
+                type="button"
+                className="milestone-toggle"
+                aria-expanded=${Boolean(milestonesExpanded)}
+                onClick=${() => onToggleMilestones(deliverable.id)}
+              >
+                ${milestonesExpanded ? "▾" : "▸"} ${milestones.length}
+                ${milestones.length === 1 ? "milestone" : "milestones"}
+              </button>
+            `
+          : null}
         ${showStories
           ? html`<${GanttStoryList}
               links=${stories || []}
@@ -2096,6 +2725,20 @@ function GanttRow({
         </button>
       </div>
     </div>
+    ${milestonesExpanded
+      ? milestones.map(
+          (milestone) => html`
+            <${GanttMilestoneRow}
+              key=${milestone.id}
+              milestone=${milestone}
+              timeline=${timeline}
+              isEditing=${String(milestone.id) === editingMilestoneId}
+              onOpen=${onOpenMilestone}
+            />
+          `
+        )
+      : null}
+    </>
   `;
 }
 
@@ -2103,7 +2746,9 @@ function GanttChart({
   projectId,
   teams,
   deliverables,
+  releaseDate,
   onInlineSave,
+  onMilestoneSave,
   submitting,
   statusFilter,
   epicKeys,
@@ -2115,6 +2760,11 @@ function GanttChart({
   const [lines, setLines] = useState([]);
   const [editingDeliverableId, setEditingDeliverableId] = useState("");
   const [inlineForm, setInlineForm] = useState({ status: "planned", progress: 0, current_start: "", current_end: "" });
+  // Collapsed by default, keyed by deliverable id: the sub-rows are detail, not
+  // the first thing to read on the chart.
+  const [expandedMilestones, setExpandedMilestones] = useState({});
+  const [editingMilestoneId, setEditingMilestoneId] = useState("");
+  const [milestoneForm, setMilestoneForm] = useState(DEFAULT_MILESTONE);
   const storageKey = `${GANTT_JIRA_PREFIX}${projectId}`;
   const [showStories, setShowStories] = useState(() => readStored(storageKey, false));
   const [storyData, setStoryData] = useState(null);
@@ -2154,21 +2804,39 @@ function GanttChart({
     setShowStories(next);
   };
 
+  // Milestone markers and the release line are percentages of this same span, so
+  // every date that gets drawn has to be inside it or it would land off the chart.
   const timeline = useMemo(() => {
-    if (!deliverables.length) {
+    const dates = [];
+    for (const item of deliverables) {
+      dates.push(startOfDay(item.current_start || item.planned_start));
+      dates.push(startOfDay(item.current_end || item.planned_end));
+      for (const milestone of item.milestones || []) {
+        dates.push(startOfDay(milestone.target_date));
+        if (milestone.actual_date) dates.push(startOfDay(milestone.actual_date));
+      }
+    }
+    if (releaseDate) dates.push(startOfDay(releaseDate));
+    if (!dates.length) {
       const today = new Date();
       return { start: today, end: addDays(today, 14), days: [today] };
     }
-    const starts = deliverables.map((item) => startOfDay(item.current_start || item.planned_start));
-    const ends = deliverables.map((item) => startOfDay(item.current_end || item.planned_end));
-    const min = starts.reduce((current, value) => (value < current ? value : current), starts[0]);
-    const max = ends.reduce((current, value) => (value > current ? value : current), ends[0]);
+    const min = dates.reduce((current, value) => (value < current ? value : current), dates[0]);
+    const max = dates.reduce((current, value) => (value > current ? value : current), dates[0]);
     const start = addDays(min, -1);
     const end = addDays(max, 2);
     const span = differenceInDays(start, end);
     const days = Array.from({ length: span + 1 }, (_, index) => addDays(start, index));
     return { start, end, days };
-  }, [deliverables]);
+  }, [deliverables, releaseDate]);
+
+  const releaseLeft = useMemo(() => {
+    if (!releaseDate) return null;
+    const totalDays = Math.max(differenceInDays(timeline.start, timeline.end), 1);
+    const offset = differenceInDays(timeline.start, startOfDay(releaseDate));
+    if (offset < 0 || offset > totalDays) return null;
+    return (offset / totalDays) * 100;
+  }, [releaseDate, timeline]);
 
   useLayoutEffect(() => {
     function redrawLines() {
@@ -2207,8 +2875,9 @@ function GanttChart({
     redrawLines();
     window.addEventListener("resize", redrawLines);
     return () => window.removeEventListener("resize", redrawLines);
-    // The story overlay changes row heights, so the curves have to be redrawn.
-  }, [deliverables, timeline.days.length, showStories, storyData]);
+    // The story overlay and the milestone sub-rows both change row heights, so
+    // the curves have to be redrawn whenever either is toggled.
+  }, [deliverables, timeline.days.length, showStories, storyData, expandedMilestones]);
 
   const grouped = teams.map((team) => ({
     ...team,
@@ -2250,13 +2919,50 @@ function GanttChart({
     setEditingDeliverableId("");
   };
 
+  const toggleMilestones = (deliverableId) =>
+    setExpandedMilestones((current) => ({
+      ...current,
+      [deliverableId]: !current[deliverableId],
+    }));
+
+  // Carries the parent's title so the popover can say which deliverable this is
+  // a piece of.
+  const editingMilestone = useMemo(() => {
+    for (const deliverable of deliverables) {
+      for (const milestone of deliverable.milestones || []) {
+        if (String(milestone.id) === editingMilestoneId) {
+          return { ...milestone, deliverable_title: deliverable.title };
+        }
+      }
+    }
+    return null;
+  }, [deliverables, editingMilestoneId]);
+
+  const openMilestone = (milestone) => {
+    setEditingMilestoneId(String(milestone.id));
+    setMilestoneForm(milestoneToForm(milestone));
+  };
+
+  const saveMilestone = (event) => {
+    if (event) event.preventDefault();
+    if (!editingMilestoneId) return;
+    onMilestoneSave(Number(editingMilestoneId), milestonePayload(milestoneForm));
+    setEditingMilestoneId("");
+  };
+
   return html`
     <section className="gantt-shell">
       <div className="gantt-toolbar">
         <div>
           <h2>Timeline overview</h2>
           <p className="gantt-caption">
-            Click any deliverable bar to edit it — and link Jira stories — without leaving the timeline view.
+            Click any deliverable bar — or a milestone diamond — to edit it and link Jira stories
+            without leaving the timeline view.
+            ${releaseDate
+              ? html`<span>
+                  ${" "}Customer release: ${formatDisplayDate(releaseDate)}.
+                </span>`
+              : null}
           </p>
         </div>
         <div className="risk-key">
@@ -2318,6 +3024,21 @@ function GanttChart({
             )}
           </svg>
 
+          ${releaseLeft === null
+            ? null
+            : html`
+                <div className="release-layer" aria-hidden="true">
+                  <div className="release-layer-gutter"></div>
+                  <div className="release-layer-track">
+                    <div className="release-marker" style=${{ left: `${releaseLeft}%` }}>
+                      <span className="release-marker-label">
+                        Release ${formatDisplayDate(releaseDate)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              `}
+
           ${grouped.map(
             (team) => html`
               <div key=${team.id}>
@@ -2340,6 +3061,10 @@ function GanttChart({
                           statusFilter=${statusFilter}
                           teams=${teams}
                           epicTeams=${epicTeams}
+                          milestonesExpanded=${Boolean(expandedMilestones[deliverable.id])}
+                          onToggleMilestones=${toggleMilestones}
+                          editingMilestoneId=${editingMilestoneId}
+                          onOpenMilestone=${openMilestone}
                         />
                       `
                     )
@@ -2364,6 +3089,25 @@ function GanttChart({
               statusFilter=${statusFilter}
               onLinksChanged=${() => { if (showStories) loadStories(); }}
               teams=${teams}
+              epicTeams=${epicTeams}
+            />
+          `
+        : null}
+
+      ${editingMilestone
+        ? html`
+            <${MilestoneEditPopover}
+              milestone=${editingMilestone}
+              teams=${teams}
+              form=${milestoneForm}
+              setForm=${setMilestoneForm}
+              onSave=${saveMilestone}
+              onCancel=${() => setEditingMilestoneId("")}
+              submitting=${submitting}
+              onMessage=${onMessage}
+              epicKeys=${epicKeys}
+              statusFilter=${statusFilter}
+              onLinksChanged=${() => { if (showStories) loadStories(); }}
               epicTeams=${epicTeams}
             />
           `
@@ -2556,6 +3300,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
     description: project.description || "",
     color: project.color,
     is_example: Boolean(project.is_example),
+    release_date: project.release_date || "",
   });
   const [confirmName, setConfirmName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2571,7 +3316,13 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
     try {
       await api(`/api/projects/${project.id}`, {
         method: "PUT",
-        body: JSON.stringify({ ...draft, name: draft.name.trim() }),
+        // An empty date box means "no release committed to yet"; the API reads an
+        // explicit null as clearing the field.
+        body: JSON.stringify({
+          ...draft,
+          name: draft.name.trim(),
+          release_date: draft.release_date || null,
+        }),
       });
       onNotify(`Workspace "${draft.name.trim()}" updated.`, "success");
       await onSaved();
@@ -2630,6 +3381,19 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
                 value=${draft.color}
                 onInput=${(event) => setDraft({ ...draft, color: event.target.value })}
               />
+            </div>
+            <div className="field">
+              <label htmlFor="project-edit-release-date">Release date</label>
+              <input
+                id="project-edit-release-date"
+                type="date"
+                value=${draft.release_date}
+                onInput=${(event) => setDraft({ ...draft, release_date: event.target.value })}
+              />
+              <span className="help-text">
+                When the software becomes available to customers. Drawn as a marker on the
+                Timeline Overview; leave empty if no release is committed to yet.
+              </span>
             </div>
             <div className="field-wide">
               <label htmlFor="project-edit-description">Description</label>
@@ -2792,6 +3556,7 @@ function WorkspaceView({
   onUpdateSubmit,
   onCsvSubmit,
   onInlineSave,
+  milestoneActions,
   onNotify,
   onWorkspaceRefresh,
   onProjectDeleted,
@@ -2867,7 +3632,9 @@ function WorkspaceView({
           projectId=${dashboard.project.id}
           teams=${teams}
           deliverables=${deliverables}
+          releaseDate=${dashboard.project.release_date || ""}
           onInlineSave=${onInlineSave}
+          onMilestoneSave=${milestoneActions.update}
           submitting=${submitting}
           statusFilter=${statusFilter}
           epicKeys=${epicKeys}
@@ -2941,8 +3708,8 @@ function WorkspaceView({
                   deliverableId=${Number(editDeliverableId)}
                   onMessage=${onNotify}
                 />
-                <${JiraDeliverableLinks}
-                  deliverableId=${Number(editDeliverableId)}
+                <${JiraWorkItemLinks}
+                  itemId=${Number(editDeliverableId)}
                   onMessage=${onNotify}
                   epicKeys=${epicKeys}
                   statusFilter=${statusFilter}
@@ -2954,6 +3721,17 @@ function WorkspaceView({
               `
             : html`<div className="empty-state">Add a deliverable first to start tracking updates.</div>`}
         </article>
+
+        <${MilestonePanel}
+          deliverables=${deliverables}
+          teams=${teams}
+          actions=${milestoneActions}
+          onMessage=${onNotify}
+          submitting=${submitting}
+          epicKeys=${epicKeys}
+          epicTeams=${epicTeams}
+          statusFilter=${statusFilter}
+        />
 
         <article className="panel">
           <h2>Bulk import</h2>
@@ -3141,7 +3919,11 @@ function App() {
     try {
       const project = await api("/api/projects", {
         method: "POST",
-        body: JSON.stringify(projectForm),
+        // An empty date box is "no release date yet", not an invalid date.
+        body: JSON.stringify({
+          ...projectForm,
+          release_date: projectForm.release_date || null,
+        }),
       });
       setProjectForm(DEFAULT_PROJECT);
       await loadProjects();
@@ -3207,6 +3989,47 @@ function App() {
     });
   };
 
+  // Milestone writes report success back to the caller so a form can clear itself
+  // only when the save actually landed — `submitJson` swallows the outcome.
+  const runMilestoneRequest = async (path, method, payload, message) => {
+    setSubmitting(true);
+    try {
+      await api(path, payload === null ? { method } : { method, body: JSON.stringify(payload) });
+      notify(message, "success");
+      await refreshWorkspace();
+      return true;
+    } catch (error) {
+      notify(error.message, "error");
+      return false;
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const milestoneActions = {
+    create: (deliverableId, payload) =>
+      runMilestoneRequest(
+        `/api/deliverables/${deliverableId}/milestones`,
+        "POST",
+        payload,
+        "Milestone created."
+      ),
+    update: (milestoneId, payload) =>
+      runMilestoneRequest(
+        `/api/milestones/${milestoneId}`,
+        "PUT",
+        payload,
+        "Milestone updated."
+      ),
+    remove: (milestoneId) =>
+      runMilestoneRequest(
+        `/api/milestones/${milestoneId}`,
+        "DELETE",
+        null,
+        "Milestone removed."
+      ),
+  };
+
   const handleCsvSubmit = async (event) => {
     event.preventDefault();
     if (!csvFile) {
@@ -3270,6 +4093,7 @@ function App() {
               onUpdateSubmit=${handleUpdateSubmit}
               onCsvSubmit=${handleCsvSubmit}
               onInlineSave=${handleUpdateDeliverable}
+              milestoneActions=${milestoneActions}
               onNotify=${notify}
               onWorkspaceRefresh=${refreshWorkspace}
               onProjectDeleted=${handleProjectDeleted}

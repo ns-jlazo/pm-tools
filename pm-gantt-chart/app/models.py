@@ -49,6 +49,9 @@ class Project(Base):
     is_example: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default=text("0")
     )
+    # When the software reaches customers. Optional: most workspaces are onboarded
+    # before a release is committed to.
+    release_date: Mapped[Optional[Date]] = mapped_column(Date)
 
     teams: Mapped[List["Team"]] = relationship(
         "Team", back_populates="project", cascade="all, delete-orphan"
@@ -75,6 +78,9 @@ class Team(Base):
         "Deliverable",
         secondary=deliverable_contributor_teams,
         back_populates="contributor_teams",
+    )
+    milestones: Mapped[List["Milestone"]] = relationship(
+        "Milestone", back_populates="team"
     )
 
 
@@ -139,6 +145,41 @@ class Deliverable(Base):
         secondary=deliverable_contributor_teams,
         back_populates="contributing_deliverables",
     )
+    milestones: Mapped[List["Milestone"]] = relationship(
+        "Milestone", back_populates="deliverable", cascade="all, delete-orphan"
+    )
+
+
+class Milestone(Base):
+    """A piece of a deliverable, owned by any team on the project.
+
+    Milestones exist only as children of a deliverable — there is no standalone
+    form — and carry a single target date rather than a planned/current window,
+    so the timeline draws them as markers instead of bars.
+    """
+
+    __tablename__ = "milestones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    deliverable_id: Mapped[int] = mapped_column(
+        ForeignKey("deliverables.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # Need not be the parent deliverable's owning team.
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    target_date: Mapped[Date] = mapped_column(Date, nullable=False)
+    actual_date: Mapped[Optional[Date]] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(30), default="planned", nullable=False)
+    progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    deliverable: Mapped[Deliverable] = relationship(
+        "Deliverable", back_populates="milestones"
+    )
+    team: Mapped[Team] = relationship("Team", back_populates="milestones")
+    jira_links: Mapped[List["MilestoneJiraLink"]] = relationship(
+        "MilestoneJiraLink", back_populates="milestone", cascade="all, delete-orphan"
+    )
 
 
 class JiraIssue(Base):
@@ -163,6 +204,9 @@ class JiraIssue(Base):
     )
     deliverable_links: Mapped[List["DeliverableJiraLink"]] = relationship(
         "DeliverableJiraLink", back_populates="issue", cascade="all, delete-orphan"
+    )
+    milestone_links: Mapped[List["MilestoneJiraLink"]] = relationship(
+        "MilestoneJiraLink", back_populates="issue", cascade="all, delete-orphan"
     )
 
 
@@ -210,4 +254,25 @@ class DeliverableJiraLink(Base):
     )
     issue: Mapped[JiraIssue] = relationship(
         "JiraIssue", back_populates="deliverable_links"
+    )
+
+
+class MilestoneJiraLink(Base):
+    __tablename__ = "milestone_jira_links"
+    __table_args__ = (
+        UniqueConstraint("milestone_id", "jira_issue_id", name="uq_milestone_jira_link"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    milestone_id: Mapped[int] = mapped_column(
+        ForeignKey("milestones.id", ondelete="CASCADE"), nullable=False
+    )
+    jira_issue_id: Mapped[int] = mapped_column(
+        ForeignKey("jira_issues.id", ondelete="CASCADE"), nullable=False
+    )
+    linked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    milestone: Mapped[Milestone] = relationship("Milestone", back_populates="jira_links")
+    issue: Mapped[JiraIssue] = relationship(
+        "JiraIssue", back_populates="milestone_links"
     )

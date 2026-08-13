@@ -53,6 +53,113 @@ class RiskCalculationTests(unittest.TestCase):
         self.assertEqual(risk.dependency_slip_days, 2)
 
 
+class MilestoneRiskRollupTests(unittest.TestCase):
+    """Risk rolls up from milestones to the parent; progress deliberately does not."""
+
+    def _deliverable(self) -> models.Deliverable:
+        deliverable = models.Deliverable(
+            id=1,
+            project_id=1,
+            title="API Contracts",
+            description="",
+            team_id=1,
+            planned_start=date(2026, 7, 1),
+            planned_end=date(2026, 7, 10),
+            current_start=date(2026, 7, 1),
+            current_end=date(2026, 7, 10),
+            status="in_progress",
+            progress=40,
+        )
+        return deliverable
+
+    @staticmethod
+    def _milestone(title: str, target: date, actual: date = None) -> models.Milestone:
+        return models.Milestone(
+            id=1,
+            deliverable_id=1,
+            title=title,
+            description="",
+            team_id=1,
+            target_date=target,
+            actual_date=actual,
+            status="planned",
+            progress=0,
+        )
+
+    def test_open_milestone_never_reads_as_slipped(self) -> None:
+        deliverable = self._deliverable()
+        # Target already in the past, but nothing landed yet: no actual date means
+        # there is nothing to measure a slip against.
+        deliverable.milestones = [self._milestone("Schema frozen", date(2026, 7, 2))]
+
+        risk = services.calculate_risk(deliverable)
+
+        self.assertFalse(risk.at_risk)
+        self.assertEqual(risk.risk_level, "none")
+        self.assertEqual(risk.milestone_slip_days, 0)
+        self.assertEqual(risk.risk_reasons, [])
+
+    def test_small_slip_makes_the_parent_medium_risk(self) -> None:
+        deliverable = self._deliverable()
+        deliverable.milestones = [
+            self._milestone("Schema frozen", date(2026, 7, 2), date(2026, 7, 4))
+        ]
+
+        risk = services.calculate_risk(deliverable)
+
+        self.assertTrue(risk.at_risk)
+        self.assertFalse(risk.delayed)
+        self.assertEqual(risk.risk_level, "medium")
+        self.assertEqual(risk.milestone_slip_days, 2)
+        self.assertEqual(
+            risk.risk_reasons, ["Milestone Schema frozen slipped by 2 day(s)"]
+        )
+        # The parent keeps its own progress: only risk rolls up.
+        self.assertEqual(deliverable.progress, 40)
+
+    def test_three_day_slip_raises_the_parent_to_high(self) -> None:
+        deliverable = self._deliverable()
+        deliverable.milestones = [
+            self._milestone("Schema frozen", date(2026, 7, 2), date(2026, 7, 5))
+        ]
+
+        risk = services.calculate_risk(deliverable)
+
+        self.assertEqual(risk.risk_level, "high")
+        self.assertEqual(risk.milestone_slip_days, 3)
+
+    def test_worst_slip_wins_and_every_reason_is_reported(self) -> None:
+        deliverable = self._deliverable()
+        deliverable.milestones = [
+            self._milestone("Schema frozen", date(2026, 7, 2), date(2026, 7, 3)),
+            self._milestone("Client generated", date(2026, 7, 4), date(2026, 7, 9)),
+        ]
+
+        risk = services.calculate_risk(deliverable)
+
+        self.assertEqual(risk.milestone_slip_days, 5)
+        self.assertEqual(
+            risk.risk_reasons,
+            [
+                "Milestone Schema frozen slipped by 1 day(s)",
+                "Milestone Client generated slipped by 5 day(s)",
+            ],
+        )
+
+    def test_milestone_risk_is_reported_on_its_own(self) -> None:
+        clean = services.calculate_milestone_risk(
+            self._milestone("Schema frozen", date(2026, 7, 2), date(2026, 7, 2))
+        )
+        slipped = services.calculate_milestone_risk(
+            self._milestone("Schema frozen", date(2026, 7, 2), date(2026, 7, 6))
+        )
+
+        self.assertEqual((clean.slipped, clean.slip_days, clean.risk_level),
+                         (False, 0, "none"))
+        self.assertEqual((slipped.slipped, slipped.slip_days, slipped.risk_level),
+                         (True, 4, "high"))
+
+
 class ProjectIsolationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
@@ -197,6 +304,29 @@ class ProjectMutationTests(unittest.TestCase):
         self.assertEqual(project.name, "Alpha")
         self.assertEqual(project.description, "Original copy.")
 
+    def test_update_sets_and_clears_the_release_date(self) -> None:
+        project = self._project_with_work("Alpha")
+
+        services.update_project(
+            self.db, project, schemas.ProjectUpdate(release_date=date(2026, 9, 1))
+        )
+        self.assertEqual(project.release_date, date(2026, 9, 1))
+
+        # An explicit null is how the settings drawer clears the date; the loop
+        # used to skip every None and silently keep the old value.
+        services.update_project(self.db, project, schemas.ProjectUpdate(release_date=None))
+        self.assertIsNone(project.release_date)
+
+    def test_update_leaves_the_release_date_alone_when_omitted(self) -> None:
+        project = self._project_with_work("Alpha")
+        services.update_project(
+            self.db, project, schemas.ProjectUpdate(release_date=date(2026, 9, 1))
+        )
+
+        services.update_project(self.db, project, schemas.ProjectUpdate(name="Alpha v2"))
+
+        self.assertEqual(project.release_date, date(2026, 9, 1))
+
     def test_update_rejects_duplicate_name(self) -> None:
         self._project_with_work("Alpha")
         beta = self._project_with_work("Beta")
@@ -226,6 +356,158 @@ class ProjectMutationTests(unittest.TestCase):
         self.assertEqual(len(services.list_teams(self.db, beta_id)), 1)
         # The cached Jira issue itself is shared, so it must outlive the link.
         self.assertEqual(len(list(self.db.scalars(select(models.JiraIssue)).all())), 2)
+
+
+class MilestoneCrudTests(unittest.TestCase):
+    """A milestone belongs to a deliverable but may be owned by any project team."""
+
+    def setUp(self) -> None:
+        self.engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=self.engine)
+        self.session_maker = sessionmaker(bind=self.engine)
+        self.db: Session = self.session_maker()
+
+        self.project = models.Project(name="Alpha", description="", color="#0f766e")
+        self.other_project = models.Project(name="Beta", description="", color="#1d4ed8")
+        self.db.add_all([self.project, self.other_project])
+        self.db.flush()
+
+        self.team = models.Team(project_id=self.project.id, name="Platform", color="#0f766e")
+        self.sibling_team = models.Team(
+            project_id=self.project.id, name="Mobile", color="#7c3aed"
+        )
+        self.foreign_team = models.Team(
+            project_id=self.other_project.id, name="Other", color="#1d4ed8"
+        )
+        self.db.add_all([self.team, self.sibling_team, self.foreign_team])
+        self.db.flush()
+
+        self.deliverable = models.Deliverable(
+            project_id=self.project.id,
+            title="API Contracts",
+            description="",
+            team_id=self.team.id,
+            planned_start=date(2026, 7, 1),
+            planned_end=date(2026, 7, 10),
+            status="in_progress",
+            progress=40,
+        )
+        self.db.add(self.deliverable)
+        self.db.commit()
+
+    def tearDown(self) -> None:
+        self.db.close()
+        Base.metadata.drop_all(bind=self.engine)
+        self.engine.dispose()
+
+    def _create(self, **overrides) -> models.Milestone:
+        payload = {
+            "title": "Schema frozen",
+            "team_id": self.team.id,
+            "target_date": date(2026, 7, 4),
+        }
+        payload.update(overrides)
+        return services.create_milestone(
+            self.db, self.deliverable, schemas.MilestoneCreate(**payload)
+        )
+
+    def test_create_accepts_any_team_on_the_same_project(self) -> None:
+        # Splitting a deliverable across teams is the whole point of milestones.
+        milestone = self._create(team_id=self.sibling_team.id)
+
+        self.assertEqual(milestone.deliverable_id, self.deliverable.id)
+        self.assertEqual(milestone.team_id, self.sibling_team.id)
+        self.assertIsNone(milestone.actual_date)
+
+    def test_create_rejects_a_team_from_another_project(self) -> None:
+        with self.assertRaises(ValueError):
+            self._create(team_id=self.foreign_team.id)
+
+    def test_update_rejects_a_team_from_another_project(self) -> None:
+        milestone = self._create()
+
+        with self.assertRaises(ValueError):
+            services.update_milestone(
+                self.db, milestone, schemas.MilestoneUpdate(team_id=self.foreign_team.id)
+            )
+
+    def test_update_sets_and_clears_the_actual_date(self) -> None:
+        milestone = self._create()
+
+        services.update_milestone(
+            self.db, milestone, schemas.MilestoneUpdate(actual_date=date(2026, 7, 8))
+        )
+        self.assertEqual(milestone.actual_date, date(2026, 7, 8))
+
+        # Reopening a milestone marked complete by mistake sends an explicit null.
+        services.update_milestone(self.db, milestone, schemas.MilestoneUpdate(actual_date=None))
+        self.assertIsNone(milestone.actual_date)
+
+    def test_update_leaves_omitted_fields_alone(self) -> None:
+        milestone = self._create(description="Agreed with mobile.", progress=25)
+
+        services.update_milestone(self.db, milestone, schemas.MilestoneUpdate(progress=60))
+
+        self.assertEqual(milestone.progress, 60)
+        self.assertEqual(milestone.description, "Agreed with mobile.")
+        self.assertEqual(milestone.target_date, date(2026, 7, 4))
+
+    def test_deliverables_carry_their_milestones_sorted_by_target_date(self) -> None:
+        self._create(title="Client generated", target_date=date(2026, 7, 8))
+        self._create(title="Schema frozen", target_date=date(2026, 7, 4))
+
+        rows = services.list_deliverables(self.db, self.project.id)
+        serialized = services.serialize_deliverable(rows[0])
+
+        self.assertEqual(
+            [milestone.title for milestone in serialized.milestones],
+            ["Schema frozen", "Client generated"],
+        )
+        self.assertEqual(serialized.milestones[0].team_name, "Platform")
+        self.assertEqual(serialized.milestones[0].project_id, self.project.id)
+
+    def test_deleting_the_parent_takes_its_milestones_and_jira_links(self) -> None:
+        milestone = self._create()
+        issue = models.JiraIssue(
+            jira_key="SNA-1",
+            jira_url="https://example.atlassian.net/browse/SNA-1",
+            synced_at=datetime(2026, 8, 1, 12, 0, 0),
+        )
+        self.db.add(issue)
+        self.db.flush()
+        self.db.add(
+            models.MilestoneJiraLink(
+                milestone_id=milestone.id,
+                jira_issue_id=issue.id,
+                linked_at=datetime(2026, 8, 1, 12, 0, 0),
+            )
+        )
+        self.db.commit()
+
+        self.db.delete(self.deliverable)
+        self.db.commit()
+
+        self.assertEqual(list(self.db.scalars(select(models.Milestone)).all()), [])
+        self.assertEqual(list(self.db.scalars(select(models.MilestoneJiraLink)).all()), [])
+        # The cached issue is shared, so it must outlive the link.
+        self.assertEqual(len(list(self.db.scalars(select(models.JiraIssue)).all())), 1)
+
+    def test_delete_team_is_blocked_by_a_milestone_it_owns(self) -> None:
+        self._create(team_id=self.sibling_team.id)
+
+        with self.assertRaises(services.TeamInUseError) as caught:
+            services.delete_team(self.db, self.project.id, self.sibling_team)
+
+        self.assertIn("milestone", str(caught.exception))
+
+    def test_delete_milestone_frees_the_team(self) -> None:
+        milestone = self._create(team_id=self.sibling_team.id)
+        team_id = self.sibling_team.id
+
+        services.delete_milestone(self.db, milestone)
+        services.delete_team(self.db, self.project.id, self.sibling_team)
+
+        self.assertIsNone(self.db.get(models.Team, team_id))
 
 
 class ExampleWorkspaceFlagTests(unittest.TestCase):

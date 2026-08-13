@@ -24,11 +24,13 @@ DEFAULT_PROJECTS = [
         "Phoenix Retail Refresh",
         "Platform and app modernization stream for checkout and fulfillment.",
         "#0f766e",
+        date(2026, 8, 14),
     ),
     (
         "Atlas API Expansion",
         "Partner integration stream covering catalog and billing contracts.",
         "#1d4ed8",
+        date(2026, 8, 28),
     ),
 ]
 
@@ -40,7 +42,15 @@ class DeliverableRisk:
     risk_level: str
     delay_days: int
     dependency_slip_days: int
+    milestone_slip_days: int
     risk_reasons: List[str]
+
+
+@dataclass
+class MilestoneRisk:
+    slipped: bool
+    slip_days: int
+    risk_level: str
 
 
 def seed_data(db: Session) -> None:
@@ -49,10 +59,14 @@ def seed_data(db: Session) -> None:
         return
 
     projects: List[models.Project] = []
-    for name, description, color in DEFAULT_PROJECTS:
+    for name, description, color, release_date in DEFAULT_PROJECTS:
         # Seeded workspaces exist as guidance, so they land in the example section.
         project = models.Project(
-            name=name, description=description, color=color, is_example=True
+            name=name,
+            description=description,
+            color=color,
+            is_example=True,
+            release_date=release_date,
         )
         db.add(project)
         projects.append(project)
@@ -139,6 +153,34 @@ def seed_data(db: Session) -> None:
         db.flush()
 
         title_to_id = {deliverable.title: deliverable.id for deliverable in deliverables}
+
+        # Two milestones on one deliverable, showing both things milestones are
+        # for: a piece owned by a team other than the parent's, and a slip that
+        # rolls its risk up to the parent.
+        db.add_all(
+            [
+                models.Milestone(
+                    deliverable_id=title_to_id[f"{prefix} API Contracts"],
+                    title=f"{prefix} Contract schema frozen",
+                    description="Sign-off on the request/response shapes.",
+                    team_id=team_map["Core Platform"],
+                    target_date=d(date(2026, 7, 15)),
+                    actual_date=d(date(2026, 7, 19)),
+                    status="done",
+                    progress=100,
+                ),
+                models.Milestone(
+                    deliverable_id=title_to_id[f"{prefix} API Contracts"],
+                    title=f"{prefix} Client SDK published",
+                    description="Generated clients available to downstream teams.",
+                    team_id=team_map["Mobile Experience"],
+                    target_date=d(date(2026, 7, 18)),
+                    status="in_progress",
+                    progress=40,
+                ),
+            ]
+        )
+
         db.add_all(
             [
                 models.DeliverableDependency(
@@ -171,12 +213,17 @@ def get_project(db: Session, project_id: int) -> Optional[models.Project]:
     return db.get(models.Project, project_id)
 
 
+# Project fields where an explicit null is a real value, not "leave alone".
+_NULLABLE_PROJECT_FIELDS = frozenset({"release_date"})
+
+
 def create_project(db: Session, payload: schemas.ProjectCreate) -> models.Project:
     project = models.Project(
         name=payload.name,
         description=payload.description,
         color=payload.color,
         is_example=payload.is_example,
+        release_date=payload.release_date,
     )
     db.add(project)
     db.commit()
@@ -198,8 +245,10 @@ def update_project(
         if clash is not None:
             raise ValueError("Another project already uses that name.")
     for field, value in updates.items():
-        # description may legitimately be cleared to "", so only skip None.
-        if value is not None:
+        # description may legitimately be cleared to "", so only skip None —
+        # except for release_date, where None *is* the cleared state. Since the
+        # dump excludes unset fields, a null that reaches here was sent on purpose.
+        if value is not None or field in _NULLABLE_PROJECT_FIELDS:
             setattr(project, field, value)
     db.commit()
     db.refresh(project)
@@ -271,12 +320,36 @@ def delete_team(db: Session, project_id: int, team: models.Team) -> None:
             f"Team is a contributor on {len(team.contributing_deliverables)} "
             "deliverable(s); remove it there first."
         )
+    if team.milestones:
+        raise TeamInUseError(
+            f"Team owns {len(team.milestones)} milestone(s); reassign them first."
+        )
     db.delete(team)
     db.commit()
 
 
 def _deliverable_finish(deliverable: models.Deliverable) -> date:
     return deliverable.current_end or deliverable.planned_end
+
+
+def _milestone_finish(milestone: models.Milestone) -> date:
+    """The date the milestone actually landed on, or its target while open.
+
+    Mirrors `_deliverable_finish`: with no actual date recorded there is nothing
+    to compare against the target, so an open milestone never reads as slipped.
+    """
+    return milestone.actual_date or milestone.target_date
+
+
+def calculate_milestone_risk(milestone: models.Milestone) -> MilestoneRisk:
+    finish = _milestone_finish(milestone)
+    slipped = finish > milestone.target_date
+    slip_days = max((finish - milestone.target_date).days, 0)
+    return MilestoneRisk(
+        slipped=slipped,
+        slip_days=slip_days,
+        risk_level="high" if slipped else "none",
+    )
 
 
 def calculate_risk(deliverable: models.Deliverable) -> DeliverableRisk:
@@ -298,11 +371,23 @@ def calculate_risk(deliverable: models.Deliverable) -> DeliverableRisk:
                 f"Blocked by {upstream.title} until {dependency_finish.isoformat()}"
             )
 
+    # Risk rolls up from the children, progress does not: a deliverable's own
+    # progress stays whatever was entered or derived from its own Jira stories.
+    milestone_slip_days = 0
+    for milestone in deliverable.milestones:
+        milestone_risk = calculate_milestone_risk(milestone)
+        if not milestone_risk.slipped:
+            continue
+        milestone_slip_days = max(milestone_slip_days, milestone_risk.slip_days)
+        risk_reasons.append(
+            f"Milestone {milestone.title} slipped by {milestone_risk.slip_days} day(s)"
+        )
+
     if delayed:
         risk_reasons.insert(0, f"Deliverable finish slipped by {delay_days} day(s)")
 
-    at_risk = delayed or dependency_slip_days > 0
-    if delayed or dependency_slip_days >= 3:
+    at_risk = delayed or dependency_slip_days > 0 or milestone_slip_days > 0
+    if delayed or dependency_slip_days >= 3 or milestone_slip_days >= 3:
         risk_level = "high"
     elif at_risk:
         risk_level = "medium"
@@ -315,6 +400,7 @@ def calculate_risk(deliverable: models.Deliverable) -> DeliverableRisk:
         risk_level=risk_level,
         delay_days=delay_days,
         dependency_slip_days=dependency_slip_days,
+        milestone_slip_days=milestone_slip_days,
         risk_reasons=risk_reasons,
     )
 
@@ -329,10 +415,40 @@ def list_deliverables(db: Session, project_id: int) -> List[models.Deliverable]:
             selectinload(models.Deliverable.incoming_links).selectinload(
                 models.DeliverableDependency.upstream_deliverable
             ),
+            # Risk rolls up from the milestones and they ride along in
+            # DeliverableRead, so both are needed for every serialized row.
+            selectinload(models.Deliverable.milestones).selectinload(
+                models.Milestone.team
+            ),
         )
         .order_by(models.Deliverable.planned_start, models.Deliverable.id)
     )
     return list(db.scalars(stmt).unique())
+
+
+def serialize_milestone(milestone: models.Milestone) -> schemas.MilestoneRead:
+    risk = calculate_milestone_risk(milestone)
+    return schemas.MilestoneRead(
+        id=milestone.id,
+        deliverable_id=milestone.deliverable_id,
+        project_id=milestone.team.project_id,
+        title=milestone.title,
+        description=milestone.description,
+        team_id=milestone.team_id,
+        team_name=milestone.team.name,
+        team_color=milestone.team.color,
+        target_date=milestone.target_date,
+        actual_date=milestone.actual_date,
+        status=milestone.status,
+        progress=milestone.progress,
+        slipped=risk.slipped,
+        slip_days=risk.slip_days,
+        risk_level=risk.risk_level,
+    )
+
+
+def _sorted_milestones(deliverable: models.Deliverable) -> List[models.Milestone]:
+    return sorted(deliverable.milestones, key=lambda item: (item.target_date, item.id))
 
 
 def serialize_deliverable(deliverable: models.Deliverable) -> schemas.DeliverableRead:
@@ -360,7 +476,12 @@ def serialize_deliverable(deliverable: models.Deliverable) -> schemas.Deliverabl
         risk_level=risk.risk_level,
         delay_days=risk.delay_days,
         dependency_slip_days=risk.dependency_slip_days,
+        milestone_slip_days=risk.milestone_slip_days,
         risk_reasons=risk.risk_reasons,
+        milestones=[
+            serialize_milestone(milestone)
+            for milestone in _sorted_milestones(deliverable)
+        ],
     )
 
 
@@ -469,6 +590,78 @@ def update_deliverable(
     db.commit()
     db.refresh(deliverable)
     return deliverable
+
+
+def get_milestone(db: Session, milestone_id: int) -> Optional[models.Milestone]:
+    return db.get(models.Milestone, milestone_id)
+
+
+def list_milestones(db: Session, deliverable_id: int) -> List[models.Milestone]:
+    stmt = (
+        select(models.Milestone)
+        .where(models.Milestone.deliverable_id == deliverable_id)
+        .options(selectinload(models.Milestone.team))
+        .order_by(models.Milestone.target_date, models.Milestone.id)
+    )
+    return list(db.scalars(stmt).all())
+
+
+def _validate_milestone_team(
+    db: Session, deliverable: models.Deliverable, team_id: int
+) -> None:
+    """Any team on the project may own a milestone — but only those teams.
+
+    Deliberately not restricted to the parent deliverable's team: splitting a
+    deliverable across teams is the point of milestones.
+    """
+    team = db.get(models.Team, team_id)
+    if team is None or team.project_id != deliverable.project_id:
+        raise ValueError("Team does not belong to the selected project.")
+
+
+def create_milestone(
+    db: Session, deliverable: models.Deliverable, payload: schemas.MilestoneCreate
+) -> models.Milestone:
+    _validate_milestone_team(db, deliverable, payload.team_id)
+
+    milestone = models.Milestone(
+        deliverable_id=deliverable.id,
+        title=payload.title,
+        description=payload.description,
+        team_id=payload.team_id,
+        target_date=payload.target_date,
+        actual_date=payload.actual_date,
+        status=payload.status,
+        progress=payload.progress,
+    )
+    db.add(milestone)
+    db.commit()
+    db.refresh(milestone)
+    return milestone
+
+
+def update_milestone(
+    db: Session, milestone: models.Milestone, payload: schemas.MilestoneUpdate
+) -> models.Milestone:
+    updates = payload.model_dump(exclude_unset=True)
+
+    if "team_id" in updates and updates["team_id"] is not None:
+        _validate_milestone_team(db, milestone.deliverable, updates["team_id"])
+
+    for field, value in updates.items():
+        # actual_date is cleared by sending an explicit null, which is how a
+        # milestone marked complete by mistake goes back to open.
+        if value is not None or field == "actual_date":
+            setattr(milestone, field, value)
+
+    db.commit()
+    db.refresh(milestone)
+    return milestone
+
+
+def delete_milestone(db: Session, milestone: models.Milestone) -> None:
+    db.delete(milestone)
+    db.commit()
 
 
 def _parse_date(value: Optional[str]) -> Optional[date]:
