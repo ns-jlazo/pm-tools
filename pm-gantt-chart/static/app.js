@@ -3252,10 +3252,13 @@ function GanttChart({
     "--col-width": timeline.unit === "week" ? "56px" : "34px",
   };
 
-  // The release date and every other named date the workspace carries, drawn as
-  // one list of vertical lines. Labels of nearby dates would sit on top of each
-  // other, so each marker gets a lane and its label drops a row per lane.
-  const markers = useMemo(() => {
+  // The release date and every other named date the workspace carries. Each one
+  // draws a vertical line down the chart body, and a label in the band that sits
+  // between the day headings and the first row — the band is reserved space, so a
+  // label can never be covered by a deliverable bar. Labels of dates that fall
+  // close together would still overlap each other, so they are packed into lanes
+  // and the band grows a row per lane.
+  const { markers, markerLanes } = useMemo(() => {
     const raw = [];
     if (releaseDate) {
       raw.push({
@@ -3279,18 +3282,42 @@ function GanttChart({
       .filter((marker) => marker.percent >= 0 && marker.percent <= 100)
       .sort((a, b) => a.percent - b.percent);
 
-    let lane = 0;
-    let lanePercent = null;
-    return placed.map((marker) => {
-      // Within a label's own width of the previous marker, so step down a lane.
-      if (lanePercent !== null && marker.percent - lanePercent < 14) {
-        lane += 1;
-      } else {
-        lane = 0;
+    // Lanes are packed against the labels' own widths, and a label's width is a
+    // share of the track it is positioned in, so the track's pixel width has to
+    // be reconstructed from the same numbers the board grid is laid out from.
+    const trackWidth = Math.max(
+      timeline.columns.length * (timeline.unit === "week" ? 56 : 34),
+      1
+    );
+    // Enough for the bold 0.7rem pill text plus its padding, and a gap so two
+    // labels in one lane never touch.
+    const labelWidth = (label) => ((label.length * 6.4 + 20 + 10) / trackWidth) * 100;
+
+    // Highest percent each lane is occupied up to; `placed` is sorted, so a label
+    // takes the first lane that is clear where it starts.
+    const laneEnds = [];
+    const laid = placed.map((marker) => {
+      const width = labelWidth(marker.label);
+      // Centred on its date, unless that would run off an edge of the track — then
+      // it reads inward from the line instead.
+      let align = "center";
+      let start = marker.percent - width / 2;
+      if (start < 0) {
+        align = "start";
+        start = marker.percent;
+      } else if (marker.percent + width / 2 > 100) {
+        align = "end";
+        start = marker.percent - width;
       }
-      lanePercent = marker.percent;
-      return { ...marker, lane };
+      let lane = laneEnds.findIndex((end) => end <= start);
+      if (lane === -1) {
+        lane = laneEnds.length;
+      }
+      laneEnds[lane] = start + width;
+      return { ...marker, lane, align };
     });
+
+    return { markers: laid, markerLanes: Math.max(laneEnds.length, 1) };
   }, [releaseDate, keyDates, timeline]);
 
   useLayoutEffect(() => {
@@ -3446,6 +3473,40 @@ function GanttChart({
           </div>
         </div>
 
+        ${markers.length
+          ? html`
+              <div className="release-band" style=${{ "--marker-lanes": markerLanes }}>
+                <div className="release-band-gutter">Key dates</div>
+                <div className="release-band-track">
+                  ${markers.map(
+                    (marker) => html`
+                      <div key=${marker.id} className="release-band-entry">
+                        <div
+                          className=${`release-band-item align-${marker.align}`}
+                          style=${{ left: `${marker.percent}%`, top: `${marker.lane * 22}px` }}
+                        >
+                          <span
+                            className="release-pill"
+                            style=${{ background: marker.color }}
+                          >${marker.label}</span>
+                        </div>
+                        <span
+                          className="release-band-stem"
+                          aria-hidden="true"
+                          style=${{
+                            left: `${marker.percent}%`,
+                            top: `${marker.lane * 22 + 26}px`,
+                            borderLeftColor: marker.color,
+                          }}
+                        ></span>
+                      </div>
+                    `
+                  )}
+                </div>
+              </div>
+            `
+          : null}
+
         <div className="gantt-body" ref=${bodyRef}>
           <svg className="dependency-layer">
             ${lines.map(
@@ -3471,17 +3532,12 @@ function GanttChart({
                       (marker) => html`
                         <div
                           key=${marker.id}
-                          className=${`release-marker ${marker.percent > 78 ? "label-left" : ""}`}
+                          className="release-marker"
                           style=${{
                             left: `${marker.percent}%`,
                             borderLeftColor: marker.color,
                           }}
-                        >
-                          <span
-                            className="release-marker-label"
-                            style=${{ background: marker.color, top: `${6 + marker.lane * 22}px` }}
-                          >${marker.label}</span>
-                        </div>
+                        ></div>
                       `
                     )}
                   </div>

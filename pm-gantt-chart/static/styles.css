@@ -433,10 +433,12 @@ button {
 }
 
 /* The chart is as wide as its columns demand, and `.gantt-board` scrolls to it.
-   Setting this on the header *and* the body is what keeps the day/week headings,
-   the bars, the milestone markers and the release line on one geometry — sizing
-   them separately is what used to squeeze the bars into the left of the chart. */
+   Setting this on the header, the date band *and* the body is what keeps the
+   day/week headings, the date labels, the bars, the milestone markers and the
+   release lines on one geometry — sizing them separately is what used to squeeze
+   the bars into the left of the chart. */
 .gantt-header,
+.release-band,
 .gantt-body {
   min-width: calc(var(--task-col) + var(--cols, 30) * var(--col-width, 34px));
 }
@@ -827,9 +829,10 @@ button {
 
 /* ----------------------------------------------------- timeline date markers */
 
-/* The release date and the workspace's other named dates. Each marker carries
-   its own color inline, and its label a `top` offset, so labels of dates that
-   fall close together stack instead of overlapping. */
+/* The release date and the workspace's other named dates. Each marker carries its
+   own color inline. The line runs down the chart body; the label lives in the
+   band below the day headings, which is space nothing else is drawn in, so a bar
+   can never cover it. */
 
 /* Repeats the row grid so the line lands in the same column the bars are
    positioned against; the first cell is the (empty) workstream gutter. */
@@ -853,19 +856,62 @@ button {
   border-left: 2px dashed rgba(15, 118, 110, 0.75);
 }
 
-/* A release date at the end of the plan is the common case, and the label used to
-   run off the right edge of the chart, so past `label-left` it reads back along
-   the timeline instead. */
-.release-marker.label-left .release-marker-label {
-  left: auto;
-  right: 6px;
+/* Reserved space for the date labels, between the header and the first row. It is
+   one lane tall by default and grows a lane whenever two labels would overlap, so
+   the rows below always start clear of them. */
+.release-band {
+  display: grid;
+  grid-template-columns: var(--task-col) 1fr;
+  border-bottom: 1px solid var(--line);
+  background: rgba(248, 250, 252, 0.85);
 }
 
-.release-marker-label {
+.release-band-gutter {
+  padding: 8px 16px;
+  border-right: 1px solid var(--line);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.release-band-track {
+  position: relative;
+  /* Lane height (22px) times the lanes in use, plus the padding above and below. */
+  height: calc(var(--marker-lanes, 1) * 22px + 12px);
+}
+
+/* A pill and its stem are one marker, so they are grouped in the markup; the group
+   itself is not a box, so both still position against the track. */
+.release-band-entry {
+  display: contents;
+}
+
+.release-band-item {
   position: absolute;
-  top: 6px;
-  left: 6px;
+  margin-top: 6px;
+  /* Centred on its date. `left` is the date's position, so the pill is pulled back
+     by half its own width — no width has to be known up front. */
+  transform: translateX(-50%);
+}
+
+/* Near an edge of the track a centred pill would be clipped, so it reads inward
+   from its line instead. */
+.release-band-item.align-start {
+  transform: none;
+}
+
+.release-band-item.align-end {
+  transform: translateX(-100%);
+}
+
+/* The lane offsets and the stems are measured in pixels, so the pill's height has
+   to be predictable rather than left to the font's default line box. */
+.release-pill {
+  display: inline-block;
   white-space: nowrap;
+  line-height: 1.2;
   padding: 3px 8px;
   border-radius: 999px;
   background: rgba(15, 118, 110, 0.92);
@@ -873,6 +919,15 @@ button {
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+
+/* Joins a pill in a lower lane back down to the top of its line in the body, so a
+   stacked label still reads as belonging to a date. */
+.release-band-stem {
+  position: absolute;
+  bottom: 0;
+  width: 0;
+  border-left: 2px dashed rgba(15, 118, 110, 0.75);
 }
 
 .line-high {
@@ -1150,6 +1205,7 @@ th {
   }
 
   .gantt-header,
+  .release-band,
   .gantt-row {
     grid-template-columns: 180px minmax(600px, 1fr);
   }
@@ -1165,6 +1221,7 @@ th {
   }
 
   .gantt-header,
+  .release-band,
   .gantt-row {
     grid-template-columns: 140px minmax(480px, 1fr);
   }
