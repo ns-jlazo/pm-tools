@@ -41,6 +41,27 @@ class ProjectCard(BaseModel):
     total_teams: int
 
 
+class ProjectKeyDateCreate(BaseModel):
+    """One extra dated marker on the timeline, beside the release date."""
+
+    name: str = Field(min_length=1, max_length=120)
+    color: str = Field(default="#7c3aed", min_length=4, max_length=20)
+    event_date: date
+
+
+class ProjectKeyDateUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    color: Optional[str] = Field(default=None, min_length=4, max_length=20)
+    event_date: Optional[date] = None
+
+
+class ProjectKeyDateRead(ProjectKeyDateCreate):
+    id: int
+    project_id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TeamCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     color: str = Field(default="#2563eb", min_length=4, max_length=20)
@@ -189,6 +210,8 @@ class DashboardData(BaseModel):
     teams: List[TeamRead]
     deliverables: List[DeliverableRead]
     summary: DashboardSummary
+    # Drawn as markers on the timeline alongside the project's release date.
+    key_dates: List[ProjectKeyDateRead] = Field(default_factory=list)
 
 
 class CsvImportResult(BaseModel):

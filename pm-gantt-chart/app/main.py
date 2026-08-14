@@ -166,7 +166,8 @@ def _ensure_v2_schema() -> None:
     _migrate_deliverable_rename(engine)
     _migrate_example_flag(engine)
     _migrate_release_date(engine)
-    # Adds the milestone tables on an existing database.
+    # Adds any table an existing database is missing — the milestone tables, and
+    # `project_key_dates`. New *columns* still need an explicit migration above.
     Base.metadata.create_all(bind=engine)
 
 
@@ -299,6 +300,79 @@ def delete_project_team(
         services.delete_team(db, project_id, team)
     except services.TeamInUseError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(status_code=204)
+
+
+# ------------------------------------------------------------------- key dates
+# Extra named dates drawn on the timeline beside the project's release date.
+
+
+@app.get(
+    "/api/projects/{project_id}/key-dates",
+    response_model=List[schemas.ProjectKeyDateRead],
+)
+def get_project_key_dates(
+    project_id: int, db: Session = Depends(get_db)
+) -> List[schemas.ProjectKeyDateRead]:
+    if services.get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return [
+        schemas.ProjectKeyDateRead.model_validate(key_date)
+        for key_date in services.list_key_dates(db, project_id)
+    ]
+
+
+@app.post(
+    "/api/projects/{project_id}/key-dates",
+    response_model=schemas.ProjectKeyDateRead,
+    status_code=201,
+)
+def create_project_key_date(
+    project_id: int,
+    payload: schemas.ProjectKeyDateCreate,
+    db: Session = Depends(get_db),
+) -> schemas.ProjectKeyDateRead:
+    if services.get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    key_date = services.create_key_date(db, project_id, payload)
+    return schemas.ProjectKeyDateRead.model_validate(key_date)
+
+
+@app.put(
+    "/api/projects/{project_id}/key-dates/{key_date_id}",
+    response_model=schemas.ProjectKeyDateRead,
+)
+def update_project_key_date(
+    project_id: int,
+    key_date_id: int,
+    payload: schemas.ProjectKeyDateUpdate,
+    db: Session = Depends(get_db),
+) -> schemas.ProjectKeyDateRead:
+    key_date = services.get_key_date(db, key_date_id)
+    if key_date is None or key_date.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Date not found.")
+    try:
+        services.update_key_date(db, project_id, key_date, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return schemas.ProjectKeyDateRead.model_validate(key_date)
+
+
+@app.delete(
+    "/api/projects/{project_id}/key-dates/{key_date_id}",
+    status_code=204,
+    response_class=Response,
+)
+def delete_project_key_date(
+    project_id: int, key_date_id: int, db: Session = Depends(get_db)
+) -> Response:
+    key_date = services.get_key_date(db, key_date_id)
+    if key_date is None or key_date.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Date not found.")
+    try:
+        services.delete_key_date(db, project_id, key_date)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(status_code=204)

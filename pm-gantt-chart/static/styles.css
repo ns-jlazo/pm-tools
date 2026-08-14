@@ -825,7 +825,11 @@ button {
   gap: 12px;
 }
 
-/* ------------------------------------------------------------ release marker */
+/* ----------------------------------------------------- timeline date markers */
+
+/* The release date and the workspace's other named dates. Each marker carries
+   its own color inline, and its label a `top` offset, so labels of dates that
+   fall close together stack instead of overlapping. */
 
 /* Repeats the row grid so the line lands in the same column the bars are
    positioned against; the first cell is the (empty) workstream gutter. */
@@ -1205,6 +1209,45 @@ th {
   font-size: 0.95rem;
 }
 
+/* Pushed to the right of the team name so the heading still reads as a heading. */
+.jira-team-heading-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.jira-team-edit-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.jira-team-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: var(--surface-strong);
+}
+
+.jira-team-add-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.jira-team-edit-row input[type="color"],
+.jira-team-add-row input[type="color"] {
+  width: 44px;
+  height: 38px;
+  padding: 2px;
+  border-radius: 10px;
+}
+
 .jira-link-row {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -1575,7 +1618,7 @@ th {
   padding: 4px 0;
 }
 
-/* ----- Team buckets for a deliverable's stories (timeline row + quick edit) ----- */
+/* ----- Team buckets for a deliverable's stories (quick edit dialogs) ----- */
 
 .jira-team-bucket {
   display: flex;
@@ -1596,103 +1639,6 @@ th {
 
 .jira-team-bucket-heading strong {
   color: var(--ink);
-}
-
-/* ---------------- Gantt story overlay ---------------- */
-
-.gantt-jira-toggle {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  padding: 0 4px 10px;
-}
-
-.gantt-jira-toggle label {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.85rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.gantt-story-list {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--line);
-  font-size: 0.8rem;
-}
-
-.gantt-story {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 100%;
-  min-width: 0;
-}
-
-.gantt-story-main {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.gantt-story-toggle {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
-  border-radius: 6px;
-  border: 1px solid rgba(30, 41, 59, 0.18);
-  background: white;
-  color: var(--muted);
-  cursor: pointer;
-  line-height: 1;
-  padding: 0;
-}
-
-/* The deliverable column is a fixed 280px, so summaries have to ellipsize. */
-.gantt-story-summary {
-  color: var(--muted);
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.gantt-story-links {
-  list-style: none;
-  margin: 2px 0 4px 24px;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  border-left: 2px solid var(--line);
-  padding-left: 8px;
-}
-
-.gantt-story-links li {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.gantt-story-links a {
-  font-weight: 700;
-  text-decoration: none;
-  color: var(--accent);
-}
-
-.gantt-story-relation {
-  color: var(--muted);
-  font-style: italic;
-  white-space: nowrap;
 }
 
 /* ---------------- Summary cards as nav buttons ---------------- */
@@ -1729,7 +1675,7 @@ th {
   animation: scroll-flash-pulse 1.2s ease-out 1;
 }
 
-/* ---------------- Team management drawer ---------------- */
+/* ---------------- Side drawer (workspace settings) ---------------- */
 
 .team-drawer-backdrop {
   position: fixed;
@@ -1765,45 +1711,6 @@ th {
   gap: 12px;
 }
 
-.team-drawer-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.team-drawer-row {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 10px;
-  align-items: center;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.7);
-}
-
-.team-drawer-row .team-dot {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-}
-
-.team-drawer-row-actions {
-  display: flex;
-  gap: 6px;
-}
-
-.team-drawer-edit {
-  display: grid;
-  grid-template-columns: 1fr auto auto auto;
-  gap: 8px;
-  align-items: center;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.85);
-}
-
 .team-drawer-row-error {
   grid-column: 1 / -1;
   color: var(--danger);
@@ -1813,19 +1720,69 @@ th {
   font-size: 0.85rem;
 }
 
-.team-drawer-add {
+/* ----- Other timeline dates, inside the workspace drawer ----- */
+
+.key-dates-section {
   border-top: 1px solid var(--line);
-  padding-top: 14px;
+  padding-top: 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.team-drawer-add-row {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 8px;
+/* Rows wrap rather than sit on a grid: the drawer is only ~420px wide, so a
+   name, a date and two buttons cannot share one line. */
+.key-date-row,
+.key-date-add-row {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 8px;
+}
+
+.key-date-row {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.key-date-row input:not([type="color"]),
+.key-date-add-row input:not([type="color"]) {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+.key-date-row .color-swatch,
+.key-date-add-row .color-swatch {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  padding: 2px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.key-date-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.key-date-row-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.key-date-row .team-drawer-row-error {
+  flex: 1 1 100%;
+}
+
+.key-date-add {
+  border-top: 1px dashed var(--line);
+  padding-top: 12px;
 }
 
 /* ---------------- Workspace nav + project edit affordance ---------------- */

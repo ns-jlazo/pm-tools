@@ -12,13 +12,18 @@ const STATUS_OPTIONS = ["planned", "in_progress", "blocked", "done"];
 const TOAST_FADE_MS = 400;
 const ISSUE_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 const STATUS_FILTER_PREFIX = "pm-tool.jira-status-filter.";
-const GANTT_JIRA_PREFIX = "pm-tool.gantt-jira.";
 const DEFAULT_PROJECT = {
   name: "",
   description: "",
   color: "#0f766e",
   is_example: false,
   release_date: "",
+};
+// A named date drawn on the timeline beside the release marker.
+const DEFAULT_KEY_DATE = {
+  name: "",
+  color: "#7c3aed",
+  event_date: "",
 };
 const DEFAULT_DELIVERABLE = {
   title: "",
@@ -962,13 +967,29 @@ function JiraEpicChildren({ epicKey, statusFilter }) {
   `;
 }
 
-function JiraProjectPanel({ projectId, teams, onMessage, statusFilter, onEpicsLoaded }) {
+// The one place teams are managed: each team is a group heading with the Jira
+// epics it owns underneath, and the heading carries the rename/recolor/remove
+// controls that used to live in a side drawer of their own.
+function JiraProjectPanel({
+  projectId,
+  teams,
+  onMessage,
+  statusFilter,
+  onEpicsLoaded,
+  onTeamsChanged,
+}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [pickerError, setPickerError] = useState("");
   const [trouble, setTrouble] = useState("");
+  const [editingTeamId, setEditingTeamId] = useState("");
+  const [teamDraft, setTeamDraft] = useState({ name: "", color: "#2563eb" });
+  const [teamError, setTeamError] = useState({ id: null, message: "" });
+  const [addOpen, setAddOpen] = useState(false);
+  const [addDraft, setAddDraft] = useState({ name: "", color: "#2563eb" });
+  const [teamBusy, setTeamBusy] = useState(false);
 
   // The epic -> team assignment made here is also what buckets a deliverable's
   // stories by team on the timeline, so publish it alongside the keys.
@@ -1050,6 +1071,78 @@ function JiraProjectPanel({ projectId, teams, onMessage, statusFilter, onEpicsLo
     }
   };
 
+  // A team write changes the dashboard (team dropdowns, timeline colors) *and*
+  // this panel's grouping, so both are refreshed.
+  const afterTeamWrite = async () => {
+    if (typeof onTeamsChanged === "function") await onTeamsChanged();
+    await load();
+  };
+
+  const beginEditTeam = (team) => {
+    setEditingTeamId(String(team.id));
+    setTeamDraft({ name: team.name, color: team.color });
+    setTeamError({ id: null, message: "" });
+  };
+
+  const cancelEditTeam = () => {
+    setEditingTeamId("");
+    setTeamError({ id: null, message: "" });
+  };
+
+  const saveTeam = async (team) => {
+    setTeamBusy(true);
+    setTeamError({ id: null, message: "" });
+    try {
+      await api(`/api/projects/${projectId}/teams/${team.id}`, {
+        method: "PUT",
+        body: JSON.stringify(teamDraft),
+      });
+      setEditingTeamId("");
+      onMessage(`Team "${teamDraft.name}" updated.`, "success");
+      await afterTeamWrite();
+    } catch (err) {
+      setTeamError({ id: team.id, message: err.message });
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  // The API answers 409 with the reason a team is still in use (owned
+  // deliverables, contributions, milestones), so it reads in the row itself.
+  const removeTeam = async (team) => {
+    setTeamBusy(true);
+    setTeamError({ id: null, message: "" });
+    try {
+      await api(`/api/projects/${projectId}/teams/${team.id}`, { method: "DELETE" });
+      onMessage(`Team "${team.name}" removed.`, "success");
+      await afterTeamWrite();
+    } catch (err) {
+      setTeamError({ id: team.id, message: err.message });
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const addTeam = async (event) => {
+    event.preventDefault();
+    if (!addDraft.name.trim()) return;
+    setTeamBusy(true);
+    try {
+      await api(`/api/projects/${projectId}/teams`, {
+        method: "POST",
+        body: JSON.stringify(addDraft),
+      });
+      onMessage(`Team "${addDraft.name}" added.`, "success");
+      setAddDraft({ name: "", color: "#2563eb" });
+      setAddOpen(false);
+      await afterTeamWrite();
+    } catch (err) {
+      onMessage(err.message, "error");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
   const groups = useMemo(() => {
     const bucket = new Map();
     for (const team of teams) bucket.set(team.id, { team, links: [] });
@@ -1065,15 +1158,22 @@ function JiraProjectPanel({ projectId, teams, onMessage, statusFilter, onEpicsLo
   }, [teams, data]);
 
   return html`
-    <article className="panel jira-panel">
+    <article className="panel jira-panel" id="teams-section">
       <div className="jira-panel-header">
         <div>
-          <h2>Link Teams to Jira Work Items</h2>
+          <h2>Teams & Jira work items</h2>
           <p className="panel-copy">
-            Link Jira epics & stories to identified teams. Stories under each epic are visible in a read-only list.
+            Every team on this project, with the Jira epics it owns. Rename or recolor a team from
+            its heading; stories under each epic are visible in a read-only list.
           </p>
         </div>
         <div className="actions">
+          <button
+            className="button-secondary"
+            type="button"
+            aria-expanded=${addOpen}
+            onClick=${() => setAddOpen(!addOpen)}
+          >${addOpen ? "Cancel" : "+ Add team"}</button>
           <button className="button-secondary" type="button" onClick=${forceSync} disabled=${loading}>
             ${loading ? "Refreshing…" : "Refresh"}
           </button>
@@ -1082,6 +1182,37 @@ function JiraProjectPanel({ projectId, teams, onMessage, statusFilter, onEpicsLo
           </button>
         </div>
       </div>
+
+      ${addOpen
+        ? html`
+            <form className="jira-team-add" onSubmit=${addTeam}>
+              <div className="jira-team-add-row">
+                <input
+                  placeholder="Team name"
+                  value=${addDraft.name}
+                  onInput=${(event) => setAddDraft({ ...addDraft, name: event.target.value })}
+                  required
+                  aria-label="New team name"
+                />
+                <input
+                  type="color"
+                  value=${addDraft.color}
+                  onInput=${(event) => setAddDraft({ ...addDraft, color: event.target.value })}
+                  aria-label="New team color"
+                  title="Team color"
+                />
+                <button
+                  className="button-primary"
+                  type="submit"
+                  disabled=${teamBusy || !addDraft.name.trim()}
+                >Add team</button>
+              </div>
+              <span className="help-text">
+                The color is what marks this team's deliverables and milestones on the timeline.
+              </span>
+            </form>
+          `
+        : null}
 
       ${trouble ? html`<div className="jira-modal-error">${trouble}</div>` : null}
 
@@ -1092,15 +1223,67 @@ function JiraProjectPanel({ projectId, teams, onMessage, statusFilter, onEpicsLo
       ${groups.map(
         (group) => html`
           <div className="jira-team-group" key=${group.team ? group.team.id : "unassigned"}>
-            <div className="jira-team-heading">
-              ${group.team
-                ? html`
-                    <span className="team-dot" style=${{ background: group.team.color }}></span>
-                    <strong>${group.team.name}</strong>
-                  `
-                : html`<strong>Unassigned</strong>`}
-              <span className="tiny-pill">${group.links.length}</span>
-            </div>
+            ${group.team && String(group.team.id) === editingTeamId
+              ? html`
+                  <div className="jira-team-edit-row">
+                    <input
+                      value=${teamDraft.name}
+                      onInput=${(event) => setTeamDraft({ ...teamDraft, name: event.target.value })}
+                      aria-label="Team name"
+                    />
+                    <input
+                      type="color"
+                      value=${teamDraft.color}
+                      onInput=${(event) => setTeamDraft({ ...teamDraft, color: event.target.value })}
+                      aria-label="Team color"
+                      title="Team color"
+                    />
+                    <button
+                      className="button-primary"
+                      type="button"
+                      onClick=${() => saveTeam(group.team)}
+                      disabled=${teamBusy || !teamDraft.name.trim()}
+                    >Save</button>
+                    <button
+                      className="button-secondary"
+                      type="button"
+                      onClick=${cancelEditTeam}
+                      disabled=${teamBusy}
+                    >Cancel</button>
+                  </div>
+                `
+              : html`
+                  <div className="jira-team-heading">
+                    ${group.team
+                      ? html`
+                          <span className="team-dot" style=${{ background: group.team.color }}></span>
+                          <strong>${group.team.name}</strong>
+                        `
+                      : html`<strong>Unassigned</strong>`}
+                    <span className="tiny-pill">${group.links.length}</span>
+                    ${group.team
+                      ? html`
+                          <div className="jira-team-heading-actions">
+                            <button
+                              className="button-secondary"
+                              type="button"
+                              onClick=${() => beginEditTeam(group.team)}
+                              disabled=${teamBusy}
+                            >Edit team</button>
+                            <button
+                              className="button-secondary"
+                              type="button"
+                              onClick=${() => removeTeam(group.team)}
+                              disabled=${teamBusy}
+                            >Remove</button>
+                          </div>
+                        `
+                      : null}
+                  </div>
+                `}
+            ${group.team && teamError.id === group.team.id
+              ? html`<div className="team-drawer-row-error">${teamError.message}</div>`
+              : null}
             ${group.links.length
               ? group.links.map(
                   (link) => html`
@@ -2418,7 +2601,7 @@ function DeliverableRosterPanel({
       : null;
 
   return html`
-    <article className="panel roster-panel">
+    <article className="panel roster-panel" id="deliverables-section">
       <div className="roster-header">
         <div>
           <h2>Deliverables & milestones</h2>
@@ -2604,7 +2787,6 @@ function InlineEditPopover({
   onMessage,
   epicKeys,
   statusFilter,
-  onLinksChanged,
   teams,
   epicTeams,
 }) {
@@ -2652,7 +2834,6 @@ function InlineEditPopover({
           onMessage=${onMessage}
           epicKeys=${epicKeys}
           statusFilter=${statusFilter}
-          onLinked=${onLinksChanged}
           onProgressSuggested=${(value) =>
             setForm((current) => ({ ...current, progress: value }))}
           teams=${teams}
@@ -2679,7 +2860,6 @@ function MilestoneEditorModal({
   onMessage,
   epicKeys,
   statusFilter,
-  onLinksChanged,
   epicTeams,
 }) {
   const creating = mode === "create";
@@ -2715,7 +2895,6 @@ function MilestoneEditorModal({
                 onMessage=${onMessage}
                 epicKeys=${epicKeys}
                 statusFilter=${statusFilter}
-                onLinked=${onLinksChanged}
                 onProgressSuggested=${(value) =>
                   setForm((current) => ({ ...current, progress: value }))}
                 teams=${teams}
@@ -2743,7 +2922,6 @@ function DeliverableEditorModal({
   onMessage,
   epicKeys,
   statusFilter,
-  onLinksChanged,
   epicTeams,
 }) {
   const creating = mode === "create";
@@ -2777,7 +2955,6 @@ function DeliverableEditorModal({
                 onMessage=${onMessage}
                 epicKeys=${epicKeys}
                 statusFilter=${statusFilter}
-                onLinked=${onLinksChanged}
                 onProgressSuggested=${(value) =>
                   setForm((current) => ({ ...current, progress: value }))}
                 teams=${teams}
@@ -2786,100 +2963,6 @@ function DeliverableEditorModal({
               />
             `}
     <//>
-  `;
-}
-
-function GanttStoryList({ links, statusFilter, teams, epicTeams }) {
-  const [expanded, setExpanded] = useState({});
-  const visible = statusFilter
-    ? links.filter((link) => statusFilter.isVisible(link.issue))
-    : links;
-  const hidden = links.length - visible.length;
-
-  const toggle = (key) =>
-    setExpanded((current) => ({ ...current, [key]: !current[key] }));
-
-  if (!links.length) {
-    return html`<div className="gantt-story-list">
-      <span className="help-text">No Jira stories linked.</span>
-    </div>`;
-  }
-
-  const groups = groupStoriesByTeam(visible, teams, epicTeams);
-  const flat = isFlatGrouping(groups);
-
-  const story = (link) => {
-    const issue = link.issue;
-    const open = Boolean(expanded[issue.key]);
-    const related = issue.links || [];
-    return html`
-      <div className="gantt-story" key=${link.id}>
-        <div className="gantt-story-main">
-          <button
-            type="button"
-            className="gantt-story-toggle"
-            aria-expanded=${open}
-            onClick=${() => toggle(issue.key)}
-            title=${related.length ? "Show Jira relationships" : "No Jira relationships"}
-          >${open ? "−" : "+"}</button>
-          <a href=${issue.url} target="_blank" rel="noreferrer" className="jira-result-key">
-            ${issue.key}
-          </a>
-          <span className=${jiraStatusClass(issue.status_category)}>${issue.status}</span>
-          <span className="gantt-story-summary">${issue.summary}</span>
-        </div>
-        ${open
-          ? related.length
-            ? html`
-                <ul className="gantt-story-links">
-                  ${related.map(
-                    (ref) => html`
-                      <li key=${`${ref.relation}-${ref.key}`}>
-                        <span className="gantt-story-relation">${ref.relation}</span>
-                        <a href=${ref.url} target="_blank" rel="noreferrer">${ref.key}</a>
-                        ${ref.status
-                          ? html`<span className=${jiraStatusClass(ref.status_category)}>
-                              ${ref.status}
-                            </span>`
-                          : null}
-                        <span className="gantt-story-summary">${ref.summary}</span>
-                      </li>
-                    `
-                  )}
-                </ul>
-              `
-            : html`<div className="help-text">No linked issues or subtasks in Jira.</div>`
-          : null}
-      </div>
-    `;
-  };
-
-  return html`
-    <div className="gantt-story-list">
-      <span className="tiny-pill">Jira ${visible.length}</span>
-      ${flat
-        ? (groups[0] ? groups[0].links : []).map(story)
-        : groups.map(
-            (group) => html`
-              <div
-                className="jira-team-bucket"
-                key=${group.team ? group.team.id : "unassigned"}
-              >
-                <div className="jira-team-bucket-heading">
-                  ${group.team
-                    ? html`
-                        <span className="team-dot" style=${{ background: group.team.color }}></span>
-                        <strong>${group.team.name}</strong>
-                      `
-                    : html`<strong>Unassigned</strong>`}
-                  <span className="tiny-pill">${group.links.length}</span>
-                </div>
-                ${group.links.map(story)}
-              </div>
-            `
-          )}
-      ${hidden ? html`<span className="help-text">${hidden} hidden by the status filter.</span>` : null}
-    </div>
   `;
 }
 
@@ -3010,11 +3093,6 @@ function GanttRow({
   barRefs,
   isEditing,
   onOpenInline,
-  stories,
-  showStories,
-  statusFilter,
-  teams,
-  epicTeams,
   milestonesExpanded,
   onToggleMilestones,
   editingMilestoneId,
@@ -3088,14 +3166,6 @@ function GanttRow({
               </button>
             `
           : null}
-        ${showStories
-          ? html`<${GanttStoryList}
-              links=${stories || []}
-              statusFilter=${statusFilter}
-              teams=${teams}
-              epicTeams=${epicTeams}
-            />`
-          : null}
       </div>
       <div className="timeline-grid">
         <button
@@ -3129,10 +3199,10 @@ function GanttRow({
 }
 
 function GanttChart({
-  projectId,
   teams,
   deliverables,
   releaseDate,
+  keyDates,
   onInlineSave,
   onMilestoneSave,
   submitting,
@@ -3154,46 +3224,8 @@ function GanttChart({
   const [expandedContributors, setExpandedContributors] = useState({});
   const [editingMilestoneId, setEditingMilestoneId] = useState("");
   const [milestoneForm, setMilestoneForm] = useState(DEFAULT_MILESTONE);
-  const storageKey = `${GANTT_JIRA_PREFIX}${projectId}`;
-  const [showStories, setShowStories] = useState(() => readStored(storageKey, false));
-  const [storyData, setStoryData] = useState(null);
-  const [storyLoading, setStoryLoading] = useState(false);
-  const [storyError, setStoryError] = useState("");
 
-  const loadStories = async () => {
-    setStoryLoading(true);
-    setStoryError("");
-    try {
-      const payload = await api(`/api/projects/${projectId}/jira/deliverable-links`);
-      setStoryData(payload);
-      const issues = Object.values(payload.links_by_deliverable || {})
-        .flat()
-        .map((link) => link.issue);
-      if (statusFilter) statusFilter.registerStatuses(issues);
-    } catch (err) {
-      setStoryError(err.message);
-    } finally {
-      setStoryLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    setStoryData(null);
-    setShowStories(readStored(`${GANTT_JIRA_PREFIX}${projectId}`, false));
-  }, [projectId]);
-
-  // Nothing is fetched until the toggle is on, so the default layout is untouched.
-  useEffect(() => {
-    if (showStories && storyData === null && !storyLoading) loadStories();
-  }, [showStories, storyData]);
-
-  const toggleStories = () => {
-    const next = !showStories;
-    writeStored(storageKey, next);
-    setShowStories(next);
-  };
-
-  // Milestone markers and the release line are percentages of this same span, so
+  // Milestone markers and the dated lines are percentages of this same span, so
   // every date that gets drawn has to be inside it or it would land off the chart.
   const timeline = useMemo(() => {
     const dates = [];
@@ -3206,23 +3238,60 @@ function GanttChart({
       }
     }
     if (releaseDate) dates.push(startOfDay(releaseDate));
+    for (const keyDate of keyDates || []) {
+      if (keyDate.event_date) dates.push(startOfDay(keyDate.event_date));
+    }
     return buildTimeline(dates);
-  }, [deliverables, releaseDate]);
+  }, [deliverables, releaseDate, keyDates]);
 
   // Column count and width live on the board, so the header, every row and the
-  // release layer are laid out from one set of numbers. They used to size
+  // date layer are laid out from one set of numbers. They used to size
   // themselves independently, which is what pulled the bars off their dates.
   const boardStyle = {
     "--cols": timeline.columns.length,
     "--col-width": timeline.unit === "week" ? "56px" : "34px",
   };
 
-  const releaseLeft = useMemo(() => {
-    if (!releaseDate) return null;
-    const percent = pointPercent(timeline, releaseDate);
-    if (percent < 0 || percent > 100) return null;
-    return percent;
-  }, [releaseDate, timeline]);
+  // The release date and every other named date the workspace carries, drawn as
+  // one list of vertical lines. Labels of nearby dates would sit on top of each
+  // other, so each marker gets a lane and its label drops a row per lane.
+  const markers = useMemo(() => {
+    const raw = [];
+    if (releaseDate) {
+      raw.push({
+        id: "release",
+        label: `Release ${formatDisplayDate(releaseDate)}`,
+        color: "#0f766e",
+        date: releaseDate,
+      });
+    }
+    for (const keyDate of keyDates || []) {
+      if (!keyDate.event_date) continue;
+      raw.push({
+        id: `key-${keyDate.id}`,
+        label: `${keyDate.name} ${formatDisplayDate(keyDate.event_date)}`,
+        color: keyDate.color,
+        date: keyDate.event_date,
+      });
+    }
+    const placed = raw
+      .map((marker) => ({ ...marker, percent: pointPercent(timeline, marker.date) }))
+      .filter((marker) => marker.percent >= 0 && marker.percent <= 100)
+      .sort((a, b) => a.percent - b.percent);
+
+    let lane = 0;
+    let lanePercent = null;
+    return placed.map((marker) => {
+      // Within a label's own width of the previous marker, so step down a lane.
+      if (lanePercent !== null && marker.percent - lanePercent < 14) {
+        lane += 1;
+      } else {
+        lane = 0;
+      }
+      lanePercent = marker.percent;
+      return { ...marker, lane };
+    });
+  }, [releaseDate, keyDates, timeline]);
 
   useLayoutEffect(() => {
     function redrawLines() {
@@ -3261,21 +3330,9 @@ function GanttChart({
     redrawLines();
     window.addEventListener("resize", redrawLines);
     return () => window.removeEventListener("resize", redrawLines);
-    // The story overlay, the milestone sub-rows and the contributing-team list all
-    // change row heights, so the curves have to be redrawn whenever one is toggled.
-  }, [
-    deliverables,
-    timeline.columns.length,
-    showStories,
-    storyData,
-    expandedMilestones,
-    expandedContributors,
-  ]);
-
-  const linksFor = (deliverableId) => {
-    const byId = (storyData && storyData.links_by_deliverable) || {};
-    return byId[deliverableId] || byId[String(deliverableId)] || [];
-  };
+    // The milestone sub-rows and the contributing-team list both change row
+    // heights, so the curves have to be redrawn whenever one is toggled.
+  }, [deliverables, timeline.columns.length, expandedMilestones, expandedContributors]);
 
   const openInline = (deliverable) => {
     setEditingDeliverableId(String(deliverable.id));
@@ -3366,27 +3423,6 @@ function GanttChart({
         </div>
       </div>
 
-      <div className="gantt-jira-toggle">
-        <label>
-          <input type="checkbox" checked=${showStories} onChange=${toggleStories} />
-          Show Jira stories
-        </label>
-        ${showStories && storyLoading ? html`<span className="help-text">Loading stories…</span>` : null}
-        ${showStories && storyData && storyData.stale
-          ? html`<span className="help-text">Showing cached data — refresh failed.</span>`
-          : null}
-        ${showStories && storyError ? html`<span className="jira-modal-error">${storyError}</span>` : null}
-        ${showStories && statusFilter
-          ? html`<${JiraStatusFilter}
-              filter=${statusFilter}
-              compact=${true}
-              issues=${Object.values((storyData && storyData.links_by_deliverable) || {})
-                .flat()
-                .map((link) => link.issue)}
-            />`
-          : null}
-      </div>
-
       <div className="gantt-board" style=${boardStyle}>
         <div className="gantt-header">
           <div className="task-cell"><strong>Deliverable</strong></div>
@@ -3426,23 +3462,32 @@ function GanttChart({
             )}
           </svg>
 
-          ${releaseLeft === null
-            ? null
-            : html`
+          ${markers.length
+            ? html`
                 <div className="release-layer" aria-hidden="true">
                   <div className="release-layer-gutter"></div>
                   <div className="release-layer-track">
-                    <div
-                      className=${`release-marker ${releaseLeft > 78 ? "label-left" : ""}`}
-                      style=${{ left: `${releaseLeft}%` }}
-                    >
-                      <span className="release-marker-label">
-                        Release ${formatDisplayDate(releaseDate)}
-                      </span>
-                    </div>
+                    ${markers.map(
+                      (marker) => html`
+                        <div
+                          key=${marker.id}
+                          className=${`release-marker ${marker.percent > 78 ? "label-left" : ""}`}
+                          style=${{
+                            left: `${marker.percent}%`,
+                            borderLeftColor: marker.color,
+                          }}
+                        >
+                          <span
+                            className="release-marker-label"
+                            style=${{ background: marker.color, top: `${6 + marker.lane * 22}px` }}
+                          >${marker.label}</span>
+                        </div>
+                      `
+                    )}
                   </div>
                 </div>
-              `}
+              `
+            : null}
 
           ${deliverables.length
             ? deliverables.map(
@@ -3454,11 +3499,6 @@ function GanttChart({
                     barRefs=${barRefs}
                     isEditing=${String(deliverable.id) === editingDeliverableId}
                     onOpenInline=${openInline}
-                    stories=${linksFor(deliverable.id)}
-                    showStories=${showStories}
-                    statusFilter=${statusFilter}
-                    teams=${teams}
-                    epicTeams=${epicTeams}
                     milestonesExpanded=${Boolean(expandedMilestones[deliverable.id])}
                     onToggleMilestones=${toggleMilestones}
                     editingMilestoneId=${editingMilestoneId}
@@ -3486,7 +3526,6 @@ function GanttChart({
               onMessage=${onMessage}
               epicKeys=${epicKeys}
               statusFilter=${statusFilter}
-              onLinksChanged=${() => { if (showStories) loadStories(); }}
               teams=${teams}
               epicTeams=${epicTeams}
             />
@@ -3507,7 +3546,6 @@ function GanttChart({
               onMessage=${onMessage}
               epicKeys=${epicKeys}
               statusFilter=${statusFilter}
-              onLinksChanged=${() => { if (showStories) loadStories(); }}
               epicTeams=${epicTeams}
             />
           `
@@ -3516,69 +3554,72 @@ function GanttChart({
   `;
 }
 
-function TeamManagerDrawer({ projectId, teams, onClose, onNotify, onChanged }) {
-  const [rows, setRows] = useState(teams);
+// Named dates a plan is read against — kickoff, code freeze, beta — each drawn
+// on the timeline in its own color. The release date keeps its own field above;
+// this is everything else. Writes land immediately, like the team rows in the
+// Jira panel, so a marker moves as soon as its row is saved.
+function TimelineDatesEditor({ projectId, keyDates, onNotify, onChanged }) {
   const [editingId, setEditingId] = useState("");
-  const [editDraft, setEditDraft] = useState({ name: "", color: "#2563eb" });
+  const [draft, setDraft] = useState(DEFAULT_KEY_DATE);
+  const [addDraft, setAddDraft] = useState(DEFAULT_KEY_DATE);
   const [rowError, setRowError] = useState({ id: null, message: "" });
-  const [addDraft, setAddDraft] = useState({ name: "", color: "#2563eb" });
   const [busy, setBusy] = useState(false);
+  const rows = keyDates || [];
 
-  useEffect(() => { setRows(teams); }, [teams]);
-
-  const beginEdit = (team) => {
-    setEditingId(String(team.id));
-    setEditDraft({ name: team.name, color: team.color });
+  const beginEdit = (keyDate) => {
+    setEditingId(String(keyDate.id));
+    setDraft({ name: keyDate.name, color: keyDate.color, event_date: keyDate.event_date });
     setRowError({ id: null, message: "" });
   };
+
   const cancelEdit = () => {
     setEditingId("");
     setRowError({ id: null, message: "" });
   };
 
-  const saveEdit = async (team) => {
+  const save = async (keyDate) => {
     setBusy(true);
     setRowError({ id: null, message: "" });
     try {
-      await api(`/api/projects/${projectId}/teams/${team.id}`, {
+      await api(`/api/projects/${projectId}/key-dates/${keyDate.id}`, {
         method: "PUT",
-        body: JSON.stringify(editDraft),
+        body: JSON.stringify(draft),
       });
       setEditingId("");
-      onNotify(`Team "${editDraft.name}" updated.`, "success");
+      onNotify(`Date "${draft.name}" updated.`, "success");
       await onChanged();
     } catch (err) {
-      setRowError({ id: team.id, message: err.message });
+      setRowError({ id: keyDate.id, message: err.message });
     } finally {
       setBusy(false);
     }
   };
 
-  const removeTeam = async (team) => {
+  const remove = async (keyDate) => {
     setBusy(true);
     setRowError({ id: null, message: "" });
     try {
-      await api(`/api/projects/${projectId}/teams/${team.id}`, { method: "DELETE" });
-      onNotify(`Team "${team.name}" removed.`, "success");
+      await api(`/api/projects/${projectId}/key-dates/${keyDate.id}`, { method: "DELETE" });
+      onNotify(`Date "${keyDate.name}" removed.`, "success");
       await onChanged();
     } catch (err) {
-      setRowError({ id: team.id, message: err.message });
+      setRowError({ id: keyDate.id, message: err.message });
     } finally {
       setBusy(false);
     }
   };
 
-  const addTeam = async (event) => {
+  const add = async (event) => {
     event.preventDefault();
-    if (!addDraft.name.trim()) return;
+    if (!addDraft.name.trim() || !addDraft.event_date) return;
     setBusy(true);
     try {
-      await api(`/api/projects/${projectId}/teams`, {
+      await api(`/api/projects/${projectId}/key-dates`, {
         method: "POST",
         body: JSON.stringify(addDraft),
       });
-      onNotify(`Team "${addDraft.name}" added.`, "success");
-      setAddDraft({ name: "", color: "#2563eb" });
+      onNotify(`Date "${addDraft.name}" added.`, "success");
+      setAddDraft(DEFAULT_KEY_DATE);
       await onChanged();
     } catch (err) {
       onNotify(err.message, "error");
@@ -3587,114 +3628,130 @@ function TeamManagerDrawer({ projectId, teams, onClose, onNotify, onChanged }) {
     }
   };
 
+  const colorInput = (value, onPick, label) => html`
+    <input
+      className="color-swatch"
+      type="color"
+      value=${value}
+      onInput=${(event) => onPick(event.target.value)}
+      aria-label=${label}
+      title=${label}
+    />
+  `;
+
   return html`
-    <div
-      className="team-drawer-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Manage teams"
-      onClick=${onClose}
-    >
-      <div className="team-drawer" onClick=${(event) => event.stopPropagation()}>
-        <header className="team-drawer-header">
-          <h2 style=${{ margin: 0 }}>Teams</h2>
-          <button className="button-secondary" type="button" onClick=${onClose}>Close</button>
-        </header>
-        <p className="panel-copy" style=${{ margin: 0 }}>
-          Add, rename, recolor, or remove teams for this project. Deletion is blocked while a team still owns or contributes to deliverables.
-        </p>
+    <div className="key-dates-section">
+      <strong>Other timeline dates</strong>
+      <p className="panel-copy" style=${{ margin: 0 }}>
+        Any other date this plan is read against — kickoff, code freeze, beta. Each one is drawn
+        as a marker on the Timeline Overview in the color you pick.
+      </p>
 
-        <div className="team-drawer-list">
-          ${rows.length === 0
-            ? html`<div className="empty-state">No teams yet — add one below.</div>`
-            : rows.map((team) => {
-                const isEditing = String(team.id) === editingId;
-                if (isEditing) {
-                  return html`
-                    <div className="team-drawer-edit" key=${team.id}>
-                      <input
-                        value=${editDraft.name}
-                        onInput=${(event) => setEditDraft({ ...editDraft, name: event.target.value })}
-                        aria-label="Team name"
-                      />
-                      <input
-                        type="color"
-                        value=${editDraft.color}
-                        onInput=${(event) => setEditDraft({ ...editDraft, color: event.target.value })}
-                        aria-label="Team color"
-                      />
-                      <button
-                        className="button-primary"
-                        type="button"
-                        onClick=${() => saveEdit(team)}
-                        disabled=${busy || !editDraft.name.trim()}
-                      >Save</button>
-                      <button
-                        className="button-secondary"
-                        type="button"
-                        onClick=${cancelEdit}
-                        disabled=${busy}
-                      >Cancel</button>
-                      ${rowError.id === team.id
-                        ? html`<div className="team-drawer-row-error">${rowError.message}</div>`
-                        : null}
-                    </div>
-                  `;
-                }
-                return html`
-                  <div className="team-drawer-row" key=${team.id}>
-                    <span className="team-dot" style=${{ background: team.color }}></span>
-                    <div>
-                      <strong>${team.name}</strong>
-                      <div className="help-text">${team.color}</div>
-                    </div>
-                    <div className="team-drawer-row-actions">
-                      <button
-                        className="button-secondary"
-                        type="button"
-                        onClick=${() => beginEdit(team)}
-                        disabled=${busy}
-                      >Edit</button>
-                      <button
-                        className="button-secondary"
-                        type="button"
-                        onClick=${() => removeTeam(team)}
-                        disabled=${busy}
-                      >Remove</button>
-                    </div>
-                    ${rowError.id === team.id
-                      ? html`<div className="team-drawer-row-error">${rowError.message}</div>`
-                      : null}
-                  </div>
-                `;
-              })}
+      ${rows.length
+        ? rows.map((keyDate) => {
+            if (String(keyDate.id) === editingId) {
+              return html`
+                <div className="key-date-row editing" key=${keyDate.id}>
+                  ${colorInput(draft.color, (color) => setDraft({ ...draft, color }), "Date color")}
+                  <input
+                    value=${draft.name}
+                    onInput=${(event) => setDraft({ ...draft, name: event.target.value })}
+                    aria-label="Date name"
+                  />
+                  <input
+                    type="date"
+                    value=${draft.event_date}
+                    onInput=${(event) => setDraft({ ...draft, event_date: event.target.value })}
+                    aria-label="Date"
+                  />
+                  <button
+                    className="button-primary"
+                    type="button"
+                    onClick=${() => save(keyDate)}
+                    disabled=${busy || !draft.name.trim() || !draft.event_date}
+                  >Save</button>
+                  <button
+                    className="button-secondary"
+                    type="button"
+                    onClick=${cancelEdit}
+                    disabled=${busy}
+                  >Cancel</button>
+                  ${rowError.id === keyDate.id
+                    ? html`<div className="team-drawer-row-error">${rowError.message}</div>`
+                    : null}
+                </div>
+              `;
+            }
+            return html`
+              <div className="key-date-row" key=${keyDate.id}>
+                <span className="key-date-dot" style=${{ background: keyDate.color }}></span>
+                <div>
+                  <strong>${keyDate.name}</strong>
+                  <div className="help-text">${formatReleaseDate(keyDate.event_date)}</div>
+                </div>
+                <div className="key-date-row-actions">
+                  <button
+                    className="button-secondary"
+                    type="button"
+                    onClick=${() => beginEdit(keyDate)}
+                    disabled=${busy}
+                  >Edit</button>
+                  <button
+                    className="button-secondary"
+                    type="button"
+                    onClick=${() => remove(keyDate)}
+                    disabled=${busy}
+                  >Remove</button>
+                </div>
+                ${rowError.id === keyDate.id
+                  ? html`<div className="team-drawer-row-error">${rowError.message}</div>`
+                  : null}
+              </div>
+            `;
+          })
+        : html`<div className="help-text">No other dates yet — add one below.</div>`}
+
+      <form className="key-date-add" onSubmit=${add}>
+        <div className="key-date-add-row">
+          ${colorInput(
+            addDraft.color,
+            (color) => setAddDraft({ ...addDraft, color }),
+            "New date color"
+          )}
+          <input
+            placeholder="Date name"
+            value=${addDraft.name}
+            onInput=${(event) => setAddDraft({ ...addDraft, name: event.target.value })}
+            required
+            aria-label="New date name"
+          />
+          <input
+            type="date"
+            value=${addDraft.event_date}
+            onInput=${(event) => setAddDraft({ ...addDraft, event_date: event.target.value })}
+            required
+            aria-label="New date"
+          />
+          <button
+            className="button-primary"
+            type="submit"
+            disabled=${busy || !addDraft.name.trim() || !addDraft.event_date}
+          >Add date</button>
         </div>
-
-        <form className="team-drawer-add" onSubmit=${addTeam}>
-          <strong>Add a team</strong>
-          <div className="team-drawer-add-row">
-            <input
-              placeholder="Team name"
-              value=${addDraft.name}
-              onInput=${(event) => setAddDraft({ ...addDraft, name: event.target.value })}
-              required
-              aria-label="New team name"
-            />
-            <input
-              type="color"
-              value=${addDraft.color}
-              onInput=${(event) => setAddDraft({ ...addDraft, color: event.target.value })}
-              aria-label="New team color"
-            />
-            <button className="button-primary" type="submit" disabled=${busy || !addDraft.name.trim()}>Add</button>
-          </div>
-        </form>
-      </div>
+      </form>
     </div>
   `;
 }
 
-function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, onDeleted }) {
+function ProjectSettingsDrawer({
+  project,
+  summary,
+  keyDates,
+  onClose,
+  onNotify,
+  onSaved,
+  onDeleted,
+}) {
   const [draft, setDraft] = useState({
     name: project.name,
     description: project.description || "",
@@ -3802,11 +3859,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
                   onInput=${(event) => setDraft({ ...draft, release_date: event.target.value })}
                 />
               </div>
-              <span className="help-text">
-                The square sets the workspace accent color. The date is when the software becomes
-                available to customers — it reads on the project card and is drawn as a marker on
-                the Timeline Overview; leave it empty if no release is committed to yet.
-              </span>
+              <span className="help-text">The swatch is this workspace's accent color.</span>
             </div>
             <div className="field-wide">
               <label className="checkbox-field" htmlFor="project-edit-is-example">
@@ -3832,6 +3885,13 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
             >Save changes</button>
           </div>
         </form>
+
+        <${TimelineDatesEditor}
+          projectId=${project.id}
+          keyDates=${keyDates}
+          onNotify=${onNotify}
+          onChanged=${onSaved}
+        />
 
         <div className="project-drawer-danger">
           <strong>Danger zone</strong>
@@ -3959,7 +4019,7 @@ function WorkspaceView({
 }) {
   const teams = dashboard.teams;
   const deliverables = dashboard.deliverables;
-  const [teamDrawerOpen, setTeamDrawerOpen] = useState(false);
+  const keyDates = dashboard.key_dates || [];
   const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
   // Epic keys come from the Jira panel's load; the pickers use them for the
   // "From linked epics" tab. The same load reports which team each epic belongs
@@ -4002,14 +4062,14 @@ function WorkspaceView({
             <${SummaryCard}
               label="Teams"
               value=${dashboard.summary.total_teams}
-              emphasis="Manage project teams"
-              onActivate=${() => setTeamDrawerOpen(true)}
+              emphasis="Manage teams & Jira links"
+              onActivate=${() => flashScrollTarget("teams-section")}
             />
             <${SummaryCard}
               label="Deliverables"
               value=${dashboard.summary.total_deliverables}
-              emphasis="Jump to the timeline"
-              onActivate=${() => flashScrollTarget("gantt-section")}
+              emphasis="Manage deliverables & milestones"
+              onActivate=${() => flashScrollTarget("deliverables-section")}
             />
             <${SummaryCard}
               label="At risk"
@@ -4029,10 +4089,10 @@ function WorkspaceView({
 
       <section id="gantt-section">
         <${GanttChart}
-          projectId=${dashboard.project.id}
           teams=${teams}
           deliverables=${deliverables}
           releaseDate=${dashboard.project.release_date || ""}
+          keyDates=${keyDates}
           onInlineSave=${deliverableActions.update}
           onMilestoneSave=${milestoneActions.update}
           submitting=${submitting}
@@ -4053,6 +4113,7 @@ function WorkspaceView({
           setEpicKeys(keys);
           setEpicTeams(teamsByEpic);
         }}
+        onTeamsChanged=${onWorkspaceRefresh}
       />
 
       <section className="workspace-panels">
@@ -4072,23 +4133,12 @@ function WorkspaceView({
         />
       </section>
 
-      ${teamDrawerOpen
-        ? html`
-            <${TeamManagerDrawer}
-              projectId=${dashboard.project.id}
-              teams=${teams}
-              onClose=${() => setTeamDrawerOpen(false)}
-              onNotify=${onNotify}
-              onChanged=${onWorkspaceRefresh}
-            />
-          `
-        : null}
-
       ${projectDrawerOpen
         ? html`
             <${ProjectSettingsDrawer}
               project=${dashboard.project}
               summary=${dashboard.summary}
+              keyDates=${keyDates}
               onClose=${() => setProjectDrawerOpen(false)}
               onNotify=${onNotify}
               onSaved=${onWorkspaceRefresh}

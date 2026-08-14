@@ -59,6 +59,30 @@ class Project(Base):
     deliverables: Mapped[List["Deliverable"]] = relationship(
         "Deliverable", back_populates="project", cascade="all, delete-orphan"
     )
+    key_dates: Mapped[List["ProjectKeyDate"]] = relationship(
+        "ProjectKeyDate", back_populates="project", cascade="all, delete-orphan"
+    )
+
+
+class ProjectKeyDate(Base):
+    """An extra dated marker on the timeline — kickoff, code freeze, beta, …
+
+    A workspace's release date has a field of its own on Project; this is for the
+    other dates a plan is read against, each with its own name and color.
+    """
+
+    __tablename__ = "project_key_dates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    color: Mapped[str] = mapped_column(String(20), default="#7c3aed", nullable=False)
+    # `event_date`, not `date`, so the column never reads as `datetime.date`.
+    event_date: Mapped[Date] = mapped_column(Date, nullable=False)
+
+    project: Mapped[Project] = relationship("Project", back_populates="key_dates")
 
 
 class Team(Base):

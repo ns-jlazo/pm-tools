@@ -266,6 +266,60 @@ def delete_project(db: Session, project: models.Project) -> None:
     db.commit()
 
 
+def list_key_dates(db: Session, project_id: int) -> List[models.ProjectKeyDate]:
+    stmt = (
+        select(models.ProjectKeyDate)
+        .where(models.ProjectKeyDate.project_id == project_id)
+        .order_by(models.ProjectKeyDate.event_date)
+    )
+    return list(db.scalars(stmt).all())
+
+
+def get_key_date(db: Session, key_date_id: int) -> Optional[models.ProjectKeyDate]:
+    return db.get(models.ProjectKeyDate, key_date_id)
+
+
+def create_key_date(
+    db: Session, project_id: int, payload: schemas.ProjectKeyDateCreate
+) -> models.ProjectKeyDate:
+    key_date = models.ProjectKeyDate(
+        project_id=project_id,
+        name=payload.name,
+        color=payload.color,
+        event_date=payload.event_date,
+    )
+    db.add(key_date)
+    db.commit()
+    db.refresh(key_date)
+    return key_date
+
+
+def update_key_date(
+    db: Session,
+    project_id: int,
+    key_date: models.ProjectKeyDate,
+    payload: schemas.ProjectKeyDateUpdate,
+) -> models.ProjectKeyDate:
+    if key_date.project_id != project_id:
+        raise ValueError("Date does not belong to the selected project.")
+    # Every field is required on the model, so a null here means "leave alone".
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        if value is not None:
+            setattr(key_date, field, value)
+    db.commit()
+    db.refresh(key_date)
+    return key_date
+
+
+def delete_key_date(
+    db: Session, project_id: int, key_date: models.ProjectKeyDate
+) -> None:
+    if key_date.project_id != project_id:
+        raise ValueError("Date does not belong to the selected project.")
+    db.delete(key_date)
+    db.commit()
+
+
 def list_teams(db: Session, project_id: int) -> List[models.Team]:
     stmt = select(models.Team).where(models.Team.project_id == project_id).order_by(models.Team.name)
     return list(db.scalars(stmt).all())
@@ -789,6 +843,10 @@ def dashboard_payload(db: Session, project_id: int) -> schemas.DashboardData:
         teams=teams,
         deliverables=serialized_deliverables,
         summary=summary,
+        key_dates=[
+            schemas.ProjectKeyDateRead.model_validate(key_date)
+            for key_date in list_key_dates(db, project_id)
+        ],
     )
 
 
