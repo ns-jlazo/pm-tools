@@ -71,7 +71,14 @@ function api(path, options = {}) {
   });
 }
 
+// Takes an ISO date string from the API or a Date that is already local, so the
+// timeline helpers can be handed either without every caller re-parsing.
 function startOfDay(value) {
+  if (value instanceof Date) {
+    const next = new Date(value);
+    next.setHours(0, 0, 0, 0);
+    return next;
+  }
   return new Date(`${value}T00:00:00`);
 }
 
@@ -82,6 +89,13 @@ function differenceInDays(start, end) {
 function addDays(dateValue, amount) {
   const next = new Date(dateValue);
   next.setDate(next.getDate() + amount);
+  return next;
+}
+
+// Monday-based, so a week column always covers Monday through Sunday.
+function startOfWeek(dateValue) {
+  const next = startOfDay(dateValue);
+  next.setDate(next.getDate() - ((next.getDay() + 6) % 7));
   return next;
 }
 
@@ -2869,15 +2883,70 @@ function GanttStoryList({ links, statusFilter, teams, epicTeams }) {
   `;
 }
 
+// One column per day reads well for a short project but turns a multi-month plan
+// into a wall of unreadable columns, so past this many days the chart switches to
+// one column per week and leans on the month band for orientation.
+const DAY_COLUMN_LIMIT = 45;
+
+// The single source of column geometry: the header cells, the row grids, the
+// release layer and every bar are all laid out from this one span, which is what
+// keeps a bar under its own calendar date. `spanDays` counts both endpoints, so
+// each day is a slice of the grid rather than a fencepost — divide by
+// `end - start` instead and every bar drifts left by up to a whole column.
+function buildTimeline(dates) {
+  if (!dates.length) {
+    const today = startOfDay(new Date());
+    return buildTimeline([today, addDays(today, 14)]);
+  }
+  const min = dates.reduce((current, value) => (value < current ? value : current), dates[0]);
+  const max = dates.reduce((current, value) => (value > current ? value : current), dates[0]);
+  const unit = differenceInDays(min, max) > DAY_COLUMN_LIMIT ? "week" : "day";
+  // Week mode snaps to whole weeks: the span has to divide evenly into columns or
+  // the headings and the bars would describe different amounts of time.
+  const start = unit === "week" ? startOfWeek(min) : addDays(min, -1);
+  const end = unit === "week" ? addDays(startOfWeek(max), 6) : addDays(max, 2);
+  const step = unit === "week" ? 7 : 1;
+  const spanDays = differenceInDays(start, end) + 1;
+  const columns = Array.from({ length: Math.round(spanDays / step) }, (_, index) =>
+    addDays(start, index * step)
+  );
+  // A plan that crosses new year needs the year spelled out to stay readable.
+  const monthFormat = new Intl.DateTimeFormat(
+    "en",
+    start.getFullYear() === end.getFullYear()
+      ? { month: "short" }
+      : { month: "short", year: "numeric" }
+  );
+  const months = [];
+  for (const column of columns) {
+    const key = `${column.getFullYear()}-${column.getMonth()}`;
+    const last = months[months.length - 1];
+    if (last && last.key === key) {
+      last.span += 1;
+    } else {
+      months.push({ key, label: monthFormat.format(column), span: 1 });
+    }
+  }
+  return { start, end, unit, step, spanDays, columns, months };
+}
+
+// Where a date's own column starts — used for the left edge of a bar.
+function edgePercent(timeline, value) {
+  return (differenceInDays(timeline.start, startOfDay(value)) / timeline.spanDays) * 100;
+}
+
+// Mid-day, for the things that mark a moment rather than a stretch: a milestone
+// diamond and the release line read as sitting *on* their date this way.
+function pointPercent(timeline, value) {
+  return ((differenceInDays(timeline.start, startOfDay(value)) + 0.5) / timeline.spanDays) * 100;
+}
+
 // A milestone has one date, so it draws a marker rather than a bar. When it
 // landed on a different day than planned both markers are drawn with a connector
 // between them, which is what makes the slip readable at a glance.
 function GanttMilestoneRow({ milestone, timeline, isEditing, onOpen }) {
-  const totalDays = Math.max(differenceInDays(timeline.start, timeline.end), 1);
-  const percentFor = (value) =>
-    (differenceInDays(timeline.start, startOfDay(value)) / totalDays) * 100;
-  const targetLeft = percentFor(milestone.target_date);
-  const actualLeft = milestone.actual_date ? percentFor(milestone.actual_date) : null;
+  const targetLeft = pointPercent(timeline, milestone.target_date);
+  const actualLeft = milestone.actual_date ? pointPercent(timeline, milestone.actual_date) : null;
   const drift = actualLeft !== null && Math.abs(actualLeft - targetLeft) > 0.01;
   const dates = milestone.actual_date
     ? `${formatDisplayDate(milestone.target_date)} → ${formatDisplayDate(milestone.actual_date)}`
@@ -2902,7 +2971,7 @@ function GanttMilestoneRow({ milestone, timeline, isEditing, onOpen }) {
             : null}
         </div>
       </div>
-      <div className="timeline-grid milestone-grid" style=${{ "--days": timeline.days.length }}>
+      <div className="timeline-grid milestone-grid">
         ${drift
           ? html`<div
               className="milestone-connector"
@@ -2950,14 +3019,15 @@ function GanttRow({
   onToggleMilestones,
   editingMilestoneId,
   onOpenMilestone,
+  contributorsExpanded,
+  onToggleContributors,
 }) {
   const start = startOfDay(deliverable.current_start || deliverable.planned_start);
   const end = startOfDay(deliverable.current_end || deliverable.planned_end);
-  const totalDays = Math.max(differenceInDays(timeline.start, timeline.end), 1);
-  const offsetDays = differenceInDays(timeline.start, start);
   const durationDays = Math.max(differenceInDays(start, end) + 1, 1);
-  const left = (offsetDays / totalDays) * 100;
-  const width = (durationDays / totalDays) * 100;
+  const left = edgePercent(timeline, start);
+  const width = (durationDays / timeline.spanDays) * 100;
+  const contributors = deliverable.contributor_teams || [];
   const gradient = deliverable.delayed
     ? "linear-gradient(120deg, #b91c1c, #dc2626)"
     : deliverable.at_risk
@@ -2971,6 +3041,35 @@ function GanttRow({
       <div className="task-cell">
         <strong>${deliverable.title}</strong>
         <div className="task-description"><${RichText} text=${deliverable.description} /></div>
+        <div className="task-teams">
+          <span className="task-team-owner">
+            <span className="team-dot" style=${{ background: deliverable.team_color }}></span>
+            ${deliverable.team_name}
+          </span>
+          ${contributors.length
+            ? html`<button
+                type="button"
+                className="team-plus-pill"
+                aria-expanded=${Boolean(contributorsExpanded)}
+                title=${contributorsExpanded ? "Hide contributing teams" : "Show contributing teams"}
+                onClick=${() => onToggleContributors(deliverable.id)}
+              >+${contributors.length}</button>`
+            : null}
+        </div>
+        ${contributors.length && contributorsExpanded
+          ? html`
+              <div className="team-contrib-list">
+                ${contributors.map(
+                  (team) => html`
+                    <div className="team-contrib-row" key=${team.id}>
+                      <span className="team-dot" style=${{ background: team.color }}></span>
+                      ${team.name}
+                    </div>
+                  `
+                )}
+              </div>
+            `
+          : null}
         <div className="task-meta">
           <span className="tiny-pill">${humanizeStatus(deliverable.status)}</span>
           <span className="tiny-pill">Plan: ${formatDisplayDate(deliverable.planned_start)} - ${formatDisplayDate(deliverable.planned_end)}</span>
@@ -2998,11 +3097,11 @@ function GanttRow({
             />`
           : null}
       </div>
-      <div className="timeline-grid" style=${{ "--days": timeline.days.length }}>
+      <div className="timeline-grid">
         <button
           ref=${(node) => { if (node) { barRefs.current[deliverable.id] = node; } }}
           className=${`task-bar ${deliverable.risk_level} ${isEditing ? "editing" : ""}`}
-          style=${{ left: `${left}%`, width: `${Math.max(width, 6)}%`, background: gradient }}
+          style=${{ left: `${left}%`, width: `${width}%`, background: gradient }}
           title=${deliverable.risk_reasons.join(" | ") || "On track"}
           onClick=${() => onOpenInline(deliverable)}
           type="button"
@@ -3050,6 +3149,9 @@ function GanttChart({
   // Collapsed by default, keyed by deliverable id: the sub-rows are detail, not
   // the first thing to read on the chart.
   const [expandedMilestones, setExpandedMilestones] = useState({});
+  // Kept here rather than inside the row: expanding the list changes the row's
+  // height, and the dependency curves are measured from this component.
+  const [expandedContributors, setExpandedContributors] = useState({});
   const [editingMilestoneId, setEditingMilestoneId] = useState("");
   const [milestoneForm, setMilestoneForm] = useState(DEFAULT_MILESTONE);
   const storageKey = `${GANTT_JIRA_PREFIX}${projectId}`;
@@ -3104,25 +3206,22 @@ function GanttChart({
       }
     }
     if (releaseDate) dates.push(startOfDay(releaseDate));
-    if (!dates.length) {
-      const today = new Date();
-      return { start: today, end: addDays(today, 14), days: [today] };
-    }
-    const min = dates.reduce((current, value) => (value < current ? value : current), dates[0]);
-    const max = dates.reduce((current, value) => (value > current ? value : current), dates[0]);
-    const start = addDays(min, -1);
-    const end = addDays(max, 2);
-    const span = differenceInDays(start, end);
-    const days = Array.from({ length: span + 1 }, (_, index) => addDays(start, index));
-    return { start, end, days };
+    return buildTimeline(dates);
   }, [deliverables, releaseDate]);
+
+  // Column count and width live on the board, so the header, every row and the
+  // release layer are laid out from one set of numbers. They used to size
+  // themselves independently, which is what pulled the bars off their dates.
+  const boardStyle = {
+    "--cols": timeline.columns.length,
+    "--col-width": timeline.unit === "week" ? "56px" : "34px",
+  };
 
   const releaseLeft = useMemo(() => {
     if (!releaseDate) return null;
-    const totalDays = Math.max(differenceInDays(timeline.start, timeline.end), 1);
-    const offset = differenceInDays(timeline.start, startOfDay(releaseDate));
-    if (offset < 0 || offset > totalDays) return null;
-    return (offset / totalDays) * 100;
+    const percent = pointPercent(timeline, releaseDate);
+    if (percent < 0 || percent > 100) return null;
+    return percent;
   }, [releaseDate, timeline]);
 
   useLayoutEffect(() => {
@@ -3162,14 +3261,16 @@ function GanttChart({
     redrawLines();
     window.addEventListener("resize", redrawLines);
     return () => window.removeEventListener("resize", redrawLines);
-    // The story overlay and the milestone sub-rows both change row heights, so
-    // the curves have to be redrawn whenever either is toggled.
-  }, [deliverables, timeline.days.length, showStories, storyData, expandedMilestones]);
-
-  const grouped = teams.map((team) => ({
-    ...team,
-    deliverables: deliverables.filter((deliverable) => deliverable.team_id === team.id),
-  }));
+    // The story overlay, the milestone sub-rows and the contributing-team list all
+    // change row heights, so the curves have to be redrawn whenever one is toggled.
+  }, [
+    deliverables,
+    timeline.columns.length,
+    showStories,
+    storyData,
+    expandedMilestones,
+    expandedContributors,
+  ]);
 
   const linksFor = (deliverableId) => {
     const byId = (storyData && storyData.links_by_deliverable) || {};
@@ -3208,6 +3309,12 @@ function GanttChart({
 
   const toggleMilestones = (deliverableId) =>
     setExpandedMilestones((current) => ({
+      ...current,
+      [deliverableId]: !current[deliverableId],
+    }));
+
+  const toggleContributors = (deliverableId) =>
+    setExpandedContributors((current) => ({
       ...current,
       [deliverableId]: !current[deliverableId],
     }));
@@ -3280,15 +3387,23 @@ function GanttChart({
           : null}
       </div>
 
-      <div className="gantt-board">
+      <div className="gantt-board" style=${boardStyle}>
         <div className="gantt-header">
-          <div className="task-cell"><strong>Workstream</strong></div>
-          <div className="timeline-header" style=${{ gridTemplateColumns: `repeat(${timeline.days.length}, minmax(30px, 1fr))` }}>
-            ${timeline.days.map(
-              (day) => html`
-                <div className="day-cell" key=${day.toISOString()}>
-                  <strong>${day.getDate()}</strong>
-                  <span>${day.toLocaleDateString("en", { month: "short" })}</span>
+          <div className="task-cell"><strong>Deliverable</strong></div>
+          <div className="timeline-header">
+            ${timeline.months.map(
+              (month) => html`
+                <div
+                  className="month-band-cell"
+                  key=${month.key}
+                  style=${{ gridColumn: `span ${month.span}` }}
+                >${month.label}</div>
+              `
+            )}
+            ${timeline.columns.map(
+              (column) => html`
+                <div className="day-cell" key=${column.toISOString()}>
+                  <strong>${column.getDate()}</strong>
                 </div>
               `
             )}
@@ -3317,7 +3432,10 @@ function GanttChart({
                 <div className="release-layer" aria-hidden="true">
                   <div className="release-layer-gutter"></div>
                   <div className="release-layer-track">
-                    <div className="release-marker" style=${{ left: `${releaseLeft}%` }}>
+                    <div
+                      className=${`release-marker ${releaseLeft > 78 ? "label-left" : ""}`}
+                      style=${{ left: `${releaseLeft}%` }}
+                    >
                       <span className="release-marker-label">
                         Release ${formatDisplayDate(releaseDate)}
                       </span>
@@ -3326,39 +3444,33 @@ function GanttChart({
                 </div>
               `}
 
-          ${grouped.map(
-            (team) => html`
-              <div key=${team.id}>
-                <div className="team-banner">
-                  <span className="team-dot" style=${{ background: team.color }}></span>
-                  <span>${team.name}</span>
-                </div>
-                ${team.deliverables.length
-                  ? team.deliverables.map(
-                      (deliverable) => html`
-                        <${GanttRow}
-                          key=${deliverable.id}
-                          deliverable=${deliverable}
-                          timeline=${timeline}
-                          barRefs=${barRefs}
-                          isEditing=${String(deliverable.id) === editingDeliverableId}
-                          onOpenInline=${openInline}
-                          stories=${linksFor(deliverable.id)}
-                          showStories=${showStories}
-                          statusFilter=${statusFilter}
-                          teams=${teams}
-                          epicTeams=${epicTeams}
-                          milestonesExpanded=${Boolean(expandedMilestones[deliverable.id])}
-                          onToggleMilestones=${toggleMilestones}
-                          editingMilestoneId=${editingMilestoneId}
-                          onOpenMilestone=${openMilestone}
-                        />
-                      `
-                    )
-                  : html`<div className="empty-state">No deliverables for this team yet.</div>`}
-              </div>
-            `
-          )}
+          ${deliverables.length
+            ? deliverables.map(
+                (deliverable) => html`
+                  <${GanttRow}
+                    key=${deliverable.id}
+                    deliverable=${deliverable}
+                    timeline=${timeline}
+                    barRefs=${barRefs}
+                    isEditing=${String(deliverable.id) === editingDeliverableId}
+                    onOpenInline=${openInline}
+                    stories=${linksFor(deliverable.id)}
+                    showStories=${showStories}
+                    statusFilter=${statusFilter}
+                    teams=${teams}
+                    epicTeams=${epicTeams}
+                    milestonesExpanded=${Boolean(expandedMilestones[deliverable.id])}
+                    onToggleMilestones=${toggleMilestones}
+                    editingMilestoneId=${editingMilestoneId}
+                    onOpenMilestone=${openMilestone}
+                    contributorsExpanded=${Boolean(expandedContributors[deliverable.id])}
+                    onToggleContributors=${toggleContributors}
+                  />
+                `
+              )
+            : html`<div className="empty-state">
+                No deliverables yet — create the first one to start the timeline.
+              </div>`}
         </div>
       </div>
 
