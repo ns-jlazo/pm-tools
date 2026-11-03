@@ -1813,16 +1813,7 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
           <div className="form-grid">
             <div className="field-wide">
               <label htmlFor="project-name">Project name</label>
-              <input id="project-name" value=${projectForm.name} onInput=${(event) => setProjectForm({ ...projectForm, name: event.target.value })} required />
-            </div>
-            <div className="field-wide">
-              <label htmlFor="project-description">Description</label>
-              <textarea id="project-description" rows="6" value=${projectForm.description} onInput=${(event) => setProjectForm({ ...projectForm, description: event.target.value })}></textarea>
-              <span className="help-text">${DESCRIPTION_HINT}</span>
-            </div>
-            <div className="field-wide">
-              <label htmlFor="project-release-date">Release date</label>
-              <div className="release-row-inputs">
+              <div className="name-row-inputs">
                 <input
                   id="project-color"
                   className="color-swatch"
@@ -1832,17 +1823,26 @@ function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onC
                   value=${projectForm.color}
                   onInput=${(event) => setProjectForm({ ...projectForm, color: event.target.value })}
                 />
-                <input
-                  id="project-release-date"
-                  type="date"
-                  value=${projectForm.release_date}
-                  onInput=${(event) => setProjectForm({ ...projectForm, release_date: event.target.value })}
-                />
+                <input id="project-name" value=${projectForm.name} onInput=${(event) => setProjectForm({ ...projectForm, name: event.target.value })} required />
               </div>
+              <span className="help-text">The square sets the workspace accent color.</span>
+            </div>
+            <div className="field-wide">
+              <label htmlFor="project-description">Description</label>
+              <textarea id="project-description" rows="6" value=${projectForm.description} onInput=${(event) => setProjectForm({ ...projectForm, description: event.target.value })}></textarea>
+              <span className="help-text">${DESCRIPTION_HINT}</span>
+            </div>
+            <div className="field-wide">
+              <label htmlFor="project-release-date">Release date</label>
+              <input
+                id="project-release-date"
+                type="date"
+                value=${projectForm.release_date}
+                onInput=${(event) => setProjectForm({ ...projectForm, release_date: event.target.value })}
+              />
               <span className="help-text">
-                The square sets the workspace accent color. The date is optional — it is when the
-                software becomes available to customers, and is drawn as a marker on the Timeline
-                Overview.
+                The date is optional — it is when the software becomes available to customers, and
+                is drawn as a marker on the Timeline Overview.
               </span>
             </div>
             <div className="field-wide">
@@ -3879,12 +3879,24 @@ function ProjectSettingsDrawer({
           <div className="form-grid">
             <div className="field-wide">
               <label htmlFor="project-edit-name">Project name</label>
-              <input
-                id="project-edit-name"
-                value=${draft.name}
-                onInput=${(event) => setDraft({ ...draft, name: event.target.value })}
-                required
-              />
+              <div className="name-row-inputs">
+                <input
+                  id="project-edit-color"
+                  className="color-swatch"
+                  type="color"
+                  aria-label="Accent color"
+                  title="Accent color"
+                  value=${draft.color}
+                  onInput=${(event) => setDraft({ ...draft, color: event.target.value })}
+                />
+                <input
+                  id="project-edit-name"
+                  value=${draft.name}
+                  onInput=${(event) => setDraft({ ...draft, name: event.target.value })}
+                  required
+                />
+              </div>
+              <span className="help-text">The swatch is this workspace's accent color.</span>
             </div>
             <div className="field-wide">
               <label htmlFor="project-edit-description">Description</label>
@@ -3898,24 +3910,12 @@ function ProjectSettingsDrawer({
             </div>
             <div className="field-wide">
               <label htmlFor="project-edit-release-date">Release date</label>
-              <div className="release-row-inputs">
-                <input
-                  id="project-edit-color"
-                  className="color-swatch"
-                  type="color"
-                  aria-label="Accent color"
-                  title="Accent color"
-                  value=${draft.color}
-                  onInput=${(event) => setDraft({ ...draft, color: event.target.value })}
-                />
-                <input
-                  id="project-edit-release-date"
-                  type="date"
-                  value=${draft.release_date}
-                  onInput=${(event) => setDraft({ ...draft, release_date: event.target.value })}
-                />
-              </div>
-              <span className="help-text">The swatch is this workspace's accent color.</span>
+              <input
+                id="project-edit-release-date"
+                type="date"
+                value=${draft.release_date}
+                onInput=${(event) => setDraft({ ...draft, release_date: event.target.value })}
+              />
             </div>
             <div className="field-wide">
               <label className="checkbox-field" htmlFor="project-edit-is-example">

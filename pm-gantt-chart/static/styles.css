@@ -315,15 +315,15 @@ button {
   min-height: 120px;
 }
 
-/* Accent color reduced to a swatch beside the release date. The `.field-wide`
+/* Accent color reduced to a swatch beside the project name. The `.field-wide`
    prefix is what beats the full-width input rule above on specificity. */
-.release-row-inputs {
+.name-row-inputs {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.release-row-inputs input[type="date"] {
+.name-row-inputs input:not(.color-swatch) {
   flex: 1;
 }
 
