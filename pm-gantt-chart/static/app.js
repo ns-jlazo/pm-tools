@@ -323,6 +323,123 @@ function BackArrowIcon() {
   `;
 }
 
+const JIRA_PAGE_SIZE = 10;
+const JIRA_CHIPS_KEY = "pm-tool.jira-search-chips";
+// Quick JQL scoping chips. Adding a project or issue type is one line here.
+const JIRA_CHIPS = [
+  { id: "project:SNA", kind: "project", value: "SNA", label: "project = SNA" },
+  { id: "project:PESRE", kind: "project", value: "PESRE", label: "project = PESRE" },
+  { id: "type:Epic", kind: "type", value: "Epic", label: "issueType = Epic" },
+  { id: "type:Story", kind: "type", value: "Story", label: "issueType = Story" },
+];
+// SNA is the team's home Jira project, so it starts selected.
+const JIRA_DEFAULT_CHIPS = ["project:SNA"];
+
+function chipClause(kind, field, quote, activeIds) {
+  const values = JIRA_CHIPS.filter(
+    (chip) => chip.kind === kind && activeIds.includes(chip.id)
+  ).map((chip) => (quote ? `"${chip.value}"` : chip.value));
+  if (!values.length) return "";
+  return values.length === 1 ? `${field} = ${values[0]}` : `${field} in (${values.join(", ")})`;
+}
+
+// Chips scope the search, so they AND with whatever the user typed. A typed
+// JQL's trailing ORDER BY has to stay last, hence the split.
+function buildJiraQuery(activeIds, rawJql, rawKeyword) {
+  const jql = (rawJql || "").trim();
+  const keyword = (rawKeyword || "").trim();
+  // A pasted key is a direct lookup; scoping it to a project would hide it.
+  if (!jql && keyword && ISSUE_KEY_PATTERN.test(keyword)) {
+    return `issuekey = "${keyword.toUpperCase()}"`;
+  }
+  const scope = [
+    chipClause("project", "project", true, activeIds),
+    chipClause("type", "issuetype", false, activeIds),
+  ].filter(Boolean);
+  let order = "ORDER BY updated DESC";
+  let base = "";
+  if (jql) {
+    const match = jql.match(/^(.*?)\s*\border\s+by\b(.*)$/is);
+    base = match ? match[1].trim() : jql;
+    if (match) order = `ORDER BY${match[2]}`;
+  } else if (keyword) {
+    base = `text ~ "${keyword.replace(/"/g, '\\"')}"`;
+  }
+  if (base) scope.push(scope.length ? `(${base})` : base);
+  return scope.length ? `${scope.join(" AND ")} ${order}` : "";
+}
+
+function pageOf(items, page) {
+  const last = Math.max(0, Math.ceil(items.length / JIRA_PAGE_SIZE) - 1);
+  const index = Math.min(page, last);
+  const from = index * JIRA_PAGE_SIZE;
+  return { index, items: items.slice(from, from + JIRA_PAGE_SIZE), from, hasNext: index < last };
+}
+
+function JiraPager({ index, from, count, hasNext, busy, onPrev, onNext }) {
+  if (index === 0 && !hasNext) return null;
+  return html`
+    <div className="jira-pager">
+      <button type="button" className="button-secondary" disabled=${busy || index === 0} onClick=${onPrev}>
+        ‹ Previous
+      </button>
+      <span className="help-text">Page ${index + 1} · showing ${from + 1}–${from + count}</span>
+      <button type="button" className="button-primary" disabled=${busy || !hasNext} onClick=${onNext}>
+        Next page ›
+      </button>
+    </div>
+  `;
+}
+
+function JiraResultRow({ issue, linked, selected, onToggle, onLink, submitting }) {
+  return html`
+    <div className=${`jira-result-row ${selected ? "selected" : ""}`}>
+      <div className="jira-result-main">
+        ${onToggle
+          ? html`<input
+              type="checkbox"
+              className="jira-select-box"
+              aria-label=${`Select ${issue.key}`}
+              checked=${selected}
+              disabled=${linked}
+              onChange=${() => onToggle(issue)}
+            />`
+          : null}
+        <a className="jira-result-key" href=${issue.url} target="_blank" rel="noreferrer">${issue.key}</a>
+        <span className=${jiraStatusClass(issue.status_category)}>${issue.status}</span>
+        <span className="jira-result-type">${issue.issue_type}</span>
+        ${linked ? html`<span className="tiny-pill">Linked</span>` : null}
+      </div>
+      <div className="jira-result-summary">${issue.summary}</div>
+      ${onLink
+        ? html`<div className="actions">
+            <button className="button-primary" type="button" disabled=${submitting || linked} onClick=${() => onLink(issue)}>
+              ${linked ? "Linked" : "Link"}
+            </button>
+          </div>`
+        : null}
+    </div>
+  `;
+}
+
+function JiraSelectionBar({ visible, selected, alreadyLinked, submitting, onSelectPage, onClear, onLink }) {
+  const pageSelectable = visible.filter((issue) => !alreadyLinked.has(issue.key));
+  const count = Object.keys(selected).length;
+  if (!pageSelectable.length && !count) return null;
+  return html`
+    <div className="jira-selection-bar">
+      <button type="button" className="button-secondary" disabled=${!pageSelectable.length} onClick=${() => onSelectPage(pageSelectable)}>
+        Select page
+      </button>
+      <button type="button" className="button-secondary" disabled=${!count} onClick=${onClear}>Clear</button>
+      <span className="help-text">${count} selected</span>
+      <button type="button" className="button-primary" disabled=${submitting || !count} onClick=${onLink}>
+        Link ${count} selected
+      </button>
+    </div>
+  `;
+}
+
 function JiraPickerModal({
   title,
   teams,
@@ -356,6 +473,17 @@ function JiraPickerModal({
   const [labelSearching, setLabelSearching] = useState(false);
   const [labelHint, setLabelHint] = useState("");
   const alreadyLinked = new Set(linkedKeys || []);
+  const [chips, setChips] = useState(() => readStored(JIRA_CHIPS_KEY, JIRA_DEFAULT_CHIPS));
+  // Search paging is token based (Jira's /search/jql has no offset): tokens[i]
+  // fetches page i, so Previous is just a lower index.
+  const [pageTokens, setPageTokens] = useState([null]);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [nextToken, setNextToken] = useState(null);
+  const [activeQuery, setActiveQuery] = useState("");
+  const [epicPage, setEpicPage] = useState(0);
+  const [labelPage, setLabelPage] = useState(0);
+  // key -> issue, kept across pages until the query changes.
+  const [selected, setSelected] = useState({});
 
   // Every search in here runs on a submit event, and one caller (the create
   // deliverable panel) renders this modal from inside its own <form>. Chrome
@@ -409,6 +537,7 @@ function JiraPickerModal({
           `&project_key=${encodeURIComponent(labelProjectKey.trim())}&limit=100`
       );
       setLabelResult(payload);
+      setLabelPage(0);
       if (statusFilter) statusFilter.registerStatuses(payload.issues || []);
       if (!(payload.issues || []).length) {
         // A healthy Jira plus zero rows used to clear the error and say nothing.
@@ -436,6 +565,15 @@ function JiraPickerModal({
   const labelInProgress = labelIssues.filter(isInProgressIssue).length;
   const labelProgress = progressFromIssues(labelIssues);
 
+  const epicEntries = (epicGroups || []).flatMap((group) =>
+    (statusFilter ? statusFilter.apply(group.issues) : group.issues).map((issue) => ({
+      epicKey: group.epicKey,
+      issue,
+    }))
+  );
+  const epicPaged = pageOf(epicEntries, epicPage);
+  const labelPaged = pageOf(labelVisible, labelPage);
+
   const loadEpicStories = async () => {
     setLoadingEpics(true);
     try {
@@ -450,6 +588,7 @@ function JiraPickerModal({
         })
       );
       setEpicGroups(groups);
+      setEpicPage(0);
       if (statusFilter) {
         statusFilter.registerStatuses(groups.flatMap((group) => group.issues));
       }
@@ -459,36 +598,30 @@ function JiraPickerModal({
   };
 
   useEffect(() => {
+    setSelected({});
+  }, [mode]);
+
+  useEffect(() => {
     if (mode === "epics" && epicGroups === null && hasEpics && !loadingEpics) {
       loadEpicStories();
     }
   }, [mode]);
 
-  const runSearch = async (event) => {
-    takeOver(event);
-    const trimmedJql = jql.trim();
-    const trimmedKeyword = keyword.trim();
-    let query = trimmedJql;
-    if (!query && trimmedKeyword) {
-      const safe = trimmedKeyword.replace(/"/g, '\\"');
-      // `text ~` never matches an issue key, so a pasted key like SNA-28969
-      // would silently return zero rows. Detect that shape and look it up.
-      query = ISSUE_KEY_PATTERN.test(trimmedKeyword)
-        ? `issuekey = "${trimmedKeyword.toUpperCase()}"`
-        : `text ~ "${safe}" ORDER BY updated DESC`;
-    }
-    if (!query) {
-      setError("Enter a JQL query or a keyword to search.");
-      return;
-    }
+  const fetchSearchPage = async (query, tokens, index) => {
     setError("");
     setSearching(true);
     try {
-      const payload = await api(`/api/jira/search?jql=${encodeURIComponent(query)}&limit=25`);
+      const token = tokens[index];
+      const payload = await api(
+        `/api/jira/search?jql=${encodeURIComponent(query)}&limit=${JIRA_PAGE_SIZE}` +
+          (token ? `&next_page_token=${encodeURIComponent(token)}` : "")
+      );
       const issues = payload.issues || [];
       setResults(issues);
       setSearched(true);
-      if (!issues.length) setError(await jiraTrouble());
+      setPageIndex(index);
+      setNextToken(payload.is_last ? null : payload.next_page_token || null);
+      if (!issues.length && index === 0) setError(await jiraTrouble());
     } catch (err) {
       setError(await describeJiraFailure(err));
       setResults([]);
@@ -497,6 +630,57 @@ function JiraPickerModal({
       setSearching(false);
     }
   };
+
+  // A new query starts over: back to page 1 and nothing selected.
+  const startSearch = (activeChips) => {
+    const query = buildJiraQuery(activeChips, jql, keyword);
+    if (!query) {
+      setError("Enter a JQL query or a keyword, or select a project/type chip.");
+      return;
+    }
+    setActiveQuery(query);
+    setPageTokens([null]);
+    setSelected({});
+    return fetchSearchPage(query, [null], 0);
+  };
+
+  const runSearch = (event) => {
+    takeOver(event);
+    return startSearch(chips);
+  };
+
+  const toggleChip = (id) => {
+    const next = chips.includes(id) ? chips.filter((chip) => chip !== id) : [...chips, id];
+    writeStored(JIRA_CHIPS_KEY, next);
+    setChips(next);
+    if (searched) startSearch(next);
+  };
+
+  const goToSearchPage = (delta) => {
+    const target = pageIndex + delta;
+    const tokens = [...pageTokens];
+    if (delta > 0) tokens[target] = nextToken;
+    setPageTokens(tokens);
+    return fetchSearchPage(activeQuery, tokens, target);
+  };
+
+  const toggleSelected = (issue) => {
+    setSelected((current) => {
+      const next = { ...current };
+      if (next[issue.key]) delete next[issue.key];
+      else next[issue.key] = issue;
+      return next;
+    });
+  };
+  const selectPage = (issues) =>
+    setSelected((current) => {
+      const next = { ...current };
+      for (const issue of issues) next[issue.key] = issue;
+      return next;
+    });
+  // Hand-picked stories do not seed the deliverable's progress (null), unlike
+  // a whole-label link where "N in progress" is a meaningful signal.
+  const linkSelected = () => onLinkMany(Object.keys(selected), null);
 
   const validateKey = async (event) => {
     takeOver(event);
@@ -607,53 +791,47 @@ function JiraPickerModal({
                 ? html`<div className="help-text">Loading stories from linked epics…</div>`
                 : html`
                     <div className="jira-epic-picker">
+                      ${canBulkLink
+                        ? html`<${JiraSelectionBar}
+                            visible=${epicPaged.items.map((entry) => entry.issue)}
+                            selected=${selected}
+                            alreadyLinked=${alreadyLinked}
+                            submitting=${submitting}
+                            onSelectPage=${selectPage}
+                            onClear=${() => setSelected({})}
+                            onLink=${linkSelected}
+                          />`
+                        : null}
                       ${(epicGroups || []).map((group) => {
-                        const visible = statusFilter
-                          ? statusFilter.apply(group.issues)
-                          : group.issues;
-                        const hidden = group.issues.length - visible.length;
+                        const pageRows = epicPaged.items.filter((entry) => entry.epicKey === group.epicKey);
+                        const visibleCount = epicEntries.filter((entry) => entry.epicKey === group.epicKey).length;
+                        const hidden = group.issues.length - visibleCount;
+                        if (!pageRows.length && !group.error && visibleCount) return null;
                         return html`
                           <div className="jira-epic-picker-group" key=${group.epicKey}>
                             <div className="jira-epic-picker-heading">
                               <strong>${group.epicKey}</strong>
-                              <span className="tiny-pill">${visible.length}</span>
+                              <span className="tiny-pill">${visibleCount}</span>
                               ${hidden
                                 ? html`<span className="help-text">${hidden} hidden by filter</span>`
                                 : null}
                             </div>
                             ${group.error
                               ? html`<div className="jira-modal-error">${group.error}</div>`
-                              : visible.length
-                                ? visible.map((issue) => {
-                                    const linked = alreadyLinked.has(issue.key);
-                                    return html`
-                                      <div className="jira-result-row" key=${issue.key}>
-                                        <div className="jira-result-main">
-                                          <a
-                                            className="jira-result-key"
-                                            href=${issue.url}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                          >${issue.key}</a>
-                                          <span className=${jiraStatusClass(issue.status_category)}>
-                                            ${issue.status}
-                                          </span>
-                                          <span className="jira-result-type">${issue.issue_type}</span>
-                                        </div>
-                                        <div className="jira-result-summary">${issue.summary}</div>
-                                        <div className="actions">
-                                          <button
-                                            className="button-primary"
-                                            type="button"
-                                            disabled=${submitting || linked}
-                                            onClick=${() => confirmLink(issue)}
-                                          >
-                                            ${linked ? "Linked" : "Link"}
-                                          </button>
-                                        </div>
-                                      </div>
-                                    `;
-                                  })
+                              : pageRows.length
+                                ? pageRows.map(
+                                    ({ issue }) => html`
+                                      <${JiraResultRow}
+                                        key=${issue.key}
+                                        issue=${issue}
+                                        linked=${alreadyLinked.has(issue.key)}
+                                        selected=${Boolean(selected[issue.key])}
+                                        onToggle=${canBulkLink ? toggleSelected : null}
+                                        onLink=${confirmLink}
+                                        submitting=${submitting}
+                                      />
+                                    `
+                                  )
                                 : html`<div className="help-text">
                                     ${group.issues.length
                                       ? "Every story here is hidden by the status filter."
@@ -662,6 +840,14 @@ function JiraPickerModal({
                           </div>
                         `;
                       })}
+                      <${JiraPager}
+                        index=${epicPaged.index}
+                        from=${epicPaged.from}
+                        count=${epicPaged.items.length}
+                        hasNext=${epicPaged.hasNext}
+                        onPrev=${() => setEpicPage(epicPaged.index - 1)}
+                        onNext=${() => setEpicPage(epicPaged.index + 1)}
+                      />
                       ${epicGroups && !epicGroups.length
                         ? html`<div className="empty-state">No epics linked to this project yet.</div>`
                         : null}
@@ -742,28 +928,24 @@ function JiraPickerModal({
                           </span>`}
                     </div>
                     <div className="jira-results">
-                      ${labelVisible.map((issue) => {
-                        const linked = alreadyLinked.has(issue.key);
-                        return html`
-                          <div className="jira-result-row" key=${issue.key}>
-                            <div className="jira-result-main">
-                              <a
-                                className="jira-result-key"
-                                href=${issue.url}
-                                target="_blank"
-                                rel="noreferrer"
-                              >${issue.key}</a>
-                              <span className=${jiraStatusClass(issue.status_category)}>
-                                ${issue.status}
-                              </span>
-                              <span className="jira-result-type">${issue.issue_type}</span>
-                              ${linked ? html`<span className="tiny-pill">Linked</span>` : null}
-                            </div>
-                            <div className="jira-result-summary">${issue.summary}</div>
-                          </div>
-                        `;
-                      })}
+                      ${labelPaged.items.map(
+                        (issue) => html`
+                          <${JiraResultRow}
+                            key=${issue.key}
+                            issue=${issue}
+                            linked=${alreadyLinked.has(issue.key)}
+                          />
+                        `
+                      )}
                     </div>
+                    <${JiraPager}
+                      index=${labelPaged.index}
+                      from=${labelPaged.from}
+                      count=${labelPaged.items.length}
+                      hasNext=${labelPaged.hasNext}
+                      onPrev=${() => setLabelPage(labelPaged.index - 1)}
+                      onNext=${() => setLabelPage(labelPaged.index + 1)}
+                    />
                   `
                 : html`<div className="empty-state">
                     ${labelResult
@@ -775,6 +957,29 @@ function JiraPickerModal({
           ? html`
               <form onSubmit=${runSearch} className="jira-search-form">
                 <div className="field-wide">
+                  <label>Quick filters</label>
+                  <div className="jira-chip-picker">
+                    ${JIRA_CHIPS.map((chip) => {
+                      const on = chips.includes(chip.id);
+                      return html`
+                        <button
+                          key=${chip.id}
+                          type="button"
+                          className=${`jira-query-chip ${on ? "selected" : ""}`}
+                          aria-pressed=${on}
+                          onClick=${() => toggleChip(chip.id)}
+                        >${on ? "✓ " : ""}${chip.label}</button>
+                      `;
+                    })}
+                  </div>
+                  <span className="help-text">
+                    Selected filters are ANDed with the keyword or JQL below.
+                    ${buildJiraQuery(chips, jql, keyword)
+                      ? html`Running: <code>${buildJiraQuery(chips, jql, keyword)}</code>`
+                      : null}
+                  </span>
+                </div>
+                <div className="field-wide">
                   <label htmlFor="jira-keyword">Keyword</label>
                   <input
                     id="jira-keyword"
@@ -784,10 +989,10 @@ function JiraPickerModal({
                   />
                 </div>
                 <div className="field-wide">
-                  <label htmlFor="jira-jql">JQL (advanced, overrides keyword)</label>
+                  <label htmlFor="jira-jql">JQL (advanced, used instead of keyword)</label>
                   <input
                     id="jira-jql"
-                    placeholder='project = "PROJ" AND issuetype = Epic'
+                    placeholder='labels = "my-feature" ORDER BY created DESC'
                     value=${jql}
                     onInput=${(event) => setJql(event.target.value)}
                   />
@@ -798,39 +1003,52 @@ function JiraPickerModal({
                   </button>
                 </div>
               </form>
+              ${canBulkLink && results.length
+                ? html`<${JiraSelectionBar}
+                    visible=${results}
+                    selected=${selected}
+                    alreadyLinked=${alreadyLinked}
+                    submitting=${submitting}
+                    onSelectPage=${selectPage}
+                    onClear=${() => setSelected({})}
+                    onLink=${linkSelected}
+                  />`
+                : null}
               ${results.length
                 ? html`
+                    <${JiraPager}
+                      index=${pageIndex}
+                      from=${pageIndex * JIRA_PAGE_SIZE}
+                      count=${results.length}
+                      hasNext=${Boolean(nextToken)}
+                      busy=${searching}
+                      onPrev=${() => goToSearchPage(-1)}
+                      onNext=${() => goToSearchPage(1)}
+                    />
                     <div className="jira-results">
                       ${results.map(
                         (issue) => html`
-                          <div className="jira-result-row" key=${issue.key}>
-                            <div className="jira-result-main">
-                              <a
-                                className="jira-result-key"
-                                href=${issue.url}
-                                target="_blank"
-                                rel="noreferrer"
-                              >${issue.key}</a>
-                              <span className=${jiraStatusClass(issue.status_category)}>
-                                ${issue.status}
-                              </span>
-                              <span className="jira-result-type">${issue.issue_type}</span>
-                            </div>
-                            <div className="jira-result-summary">${issue.summary}</div>
-                            <div className="actions">
-                              <button
-                                className="button-primary"
-                                type="button"
-                                disabled=${submitting}
-                                onClick=${() => confirmLink(issue)}
-                              >
-                                Link
-                              </button>
-                            </div>
-                          </div>
+                          <${JiraResultRow}
+                            key=${issue.key}
+                            issue=${issue}
+                            linked=${alreadyLinked.has(issue.key)}
+                            selected=${Boolean(selected[issue.key])}
+                            onToggle=${canBulkLink ? toggleSelected : null}
+                            onLink=${confirmLink}
+                            submitting=${submitting}
+                          />
                         `
                       )}
                     </div>
+                    <${JiraPager}
+                      index=${pageIndex}
+                      from=${pageIndex * JIRA_PAGE_SIZE}
+                      count=${results.length}
+                      hasNext=${Boolean(nextToken)}
+                      busy=${searching}
+                      onPrev=${() => goToSearchPage(-1)}
+                      onNext=${() => goToSearchPage(1)}
+                    />
                   `
                 : html`<div className="empty-state">
                     ${searched
@@ -2108,7 +2326,7 @@ function DeliverableForm({
                   className="button-secondary"
                   type="button"
                   onClick=${() => { setPickerError(""); setShowPicker(true); }}
-                >Pick Jira story</button>
+                >Select Jira stories</button>
               </div>
               ${pendingKeys.length
                 ? html`
@@ -2140,7 +2358,7 @@ function DeliverableForm({
       ${showPicker
         ? html`
             <${JiraPickerModal}
-              title="Pick a Jira story to link on create"
+              title="Select Jira stories to link on create"
               teams=${null}
               onClose=${() => setShowPicker(false)}
               onLink=${appendPendingJira}
@@ -2297,7 +2515,7 @@ function MilestoneForm({
                   className="button-secondary"
                   type="button"
                   onClick=${() => { setPickerError(""); setShowPicker(true); }}
-                >Pick Jira story</button>
+                >Select Jira stories</button>
               </div>
               ${pendingKeys.length
                 ? html`
@@ -2333,7 +2551,7 @@ function MilestoneForm({
       ${showPicker
         ? html`
             <${JiraPickerModal}
-              title="Pick a Jira story to link on create"
+              title="Select Jira stories to link on create"
               teams=${null}
               onClose=${() => setShowPicker(false)}
               onLink=${appendPendingJira}

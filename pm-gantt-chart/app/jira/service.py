@@ -245,9 +245,18 @@ def _upsert_issue(
 # ---------------------------------------------------------------- public API
 
 
-def search(jql: str, limit: int = 25) -> schemas.JiraSearchResponse:
+SEARCH_PAGE_SIZE = 10
+
+
+def search(
+    jql: str,
+    limit: int = SEARCH_PAGE_SIZE,
+    next_page_token: Optional[str] = None,
+) -> schemas.JiraSearchResponse:
     client = get_client()
-    envelope = client.search_issues(jql=jql, max_results=limit)
+    envelope = client.search_issues(
+        jql=jql, max_results=limit, next_page_token=next_page_token
+    )
     server_url = client.url
     issues = [_to_search_result(raw, server_url) for raw in envelope.get("issues") or []]
     return schemas.JiraSearchResponse(

@@ -42,6 +42,8 @@ class _FakeClient:
         self.url = "https://example.atlassian.net"
         self.issues: Dict[str, Dict[str, Any]] = {}
         self.search_calls: List[str] = []
+        self.search_tokens: List[Any] = []
+        self.search_limits: List[int] = []
         self.get_calls: List[str] = []
         self.label_calls: List[str] = []
         self.label_payload: Dict[str, Any] = {"results": []}
@@ -64,8 +66,17 @@ class _FakeClient:
     def search_issues(self, jql: str, max_results: int = 50, fields: Any = None,
                       next_page_token: Any = None) -> Dict[str, Any]:
         self.search_calls.append(jql)
-        results = list(self.issues.values())[:max_results]
-        return {"issues": results, "total": len(results), "isLast": True, "nextPageToken": None}
+        self.search_tokens.append(next_page_token)
+        self.search_limits.append(max_results)
+        everything = list(self.issues.values())
+        start = int(next_page_token or 0)
+        results = everything[start:start + max_results]
+        more = start + max_results < len(everything)
+        return {
+            "issues": results,
+            "isLast": not more,
+            "nextPageToken": str(start + max_results) if more else None,
+        }
 
     def get_issue(self, key: str, fields: Any = None) -> Dict[str, Any]:
         self.get_calls.append(key)
@@ -390,6 +401,32 @@ class JiraServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(list(grouped.links_by_milestone), [self.milestone_id])
+
+
+class JiraSearchPaginationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fake = _FakeClient()
+        for i in range(25):
+            self.fake.add("SNA-{}".format(i + 1))
+        self._patch = mock.patch.object(jira_service, "get_client", lambda: self.fake)
+        self._patch.start()
+
+    def tearDown(self) -> None:
+        self._patch.stop()
+
+    def test_default_page_is_ten_and_exposes_token(self) -> None:
+        page = jira_service.search("project = SNA")
+        self.assertEqual(len(page.issues), 10)
+        self.assertEqual(self.fake.search_limits, [10])
+        self.assertFalse(page.is_last)
+        self.assertEqual(page.next_page_token, "10")
+
+    def test_token_is_forwarded_and_last_page_flagged(self) -> None:
+        page = jira_service.search("project = SNA", next_page_token="20")
+        self.assertEqual(self.fake.search_tokens, ["20"])
+        self.assertEqual([i.key for i in page.issues][0], "SNA-21")
+        self.assertTrue(page.is_last)
+        self.assertIsNone(page.next_page_token)
 
 
 class JiraLabelTests(unittest.TestCase):

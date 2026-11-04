@@ -2079,3 +2079,65 @@ th {
   margin-top: 4px;
 }
 
+
+/* Jira picker: quick JQL chips, pager, multi-select */
+.jira-chip-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.jira-query-chip {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(30, 41, 59, 0.2);
+  background: white;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.jira-query-chip.selected {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.jira-pager,
+.jira-selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.jira-pager {
+  justify-content: space-between;
+}
+
+.jira-selection-bar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-strong);
+}
+
+.jira-selection-bar .button-primary {
+  margin-left: auto;
+}
+
+.jira-result-row.selected {
+  border-color: var(--accent);
+  background: rgba(15, 118, 110, 0.07);
+}
+
+.jira-select-box {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}

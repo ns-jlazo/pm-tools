@@ -37,7 +37,8 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="Search Jira using JQL.")
     parser.add_argument("jql", help="JQL query string")
-    parser.add_argument("--limit", type=int, default=25, help="Max results (default 25)")
+    parser.add_argument("--limit", type=int, default=10, help="Page size (default 10)")
+    parser.add_argument("--page-token", default=None, help="nextPageToken from a prior page")
     parser.add_argument("--json", action="store_true", help="Emit JSON array")
     args = parser.parse_args()
 
@@ -48,7 +49,8 @@ def main() -> int:
         return 2
 
     client = JiraClient(url=url, email=email, api_token=token)
-    envelope = client.search_issues(jql=args.jql, max_results=args.limit)
+    envelope = client.search_issues(jql=args.jql, max_results=args.limit,
+                                  next_page_token=args.page_token)
     issues = envelope.get("issues") or []
 
     if args.json:
@@ -61,6 +63,8 @@ def main() -> int:
             for issue in issues
         ]
         print(json.dumps(payload, indent=2))
+        if envelope.get("nextPageToken"):
+            print(f"nextPageToken: {envelope['nextPageToken']}", file=sys.stderr)
         return 0
 
     if not issues:
@@ -74,6 +78,8 @@ def main() -> int:
         status = (fields.get("status") or {}).get("name") or "?"
         summary = fields.get("summary") or ""
         print(f"{key} [{status}] {summary}")
+    if envelope.get("nextPageToken") and not envelope.get("isLast", True):
+        print(f"More results: --page-token {envelope['nextPageToken']}")
     return 0
 
 

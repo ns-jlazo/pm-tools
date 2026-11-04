@@ -328,6 +328,19 @@ deliverable 2 → SNA-28969).
   above it; create + update a deliverable and watch the toasts fade) — endpoints, math,
   and served markup verified, DOM interaction not driven.
 
+## Phase: Search upgrade (10/page, JQL chips, SNA default, multi-select)
+
+- [x] "Pick Jira story" → "Select Jira stories" (`static/app.js`, `SKILL.md`).
+- [x] `GET /api/jira/search` defaults to `limit=10` and accepts `next_page_token`;
+  `scripts/jira-search.py` gets `--page-token` and a 10 default. Two service tests added.
+- [x] Picker: 10 per page everywhere (Search = token stack, Label/Epics = client-side).
+- [x] Search tab chips (`project = SNA/PESRE`, `issueType = Epic/Story`), SNA on by default,
+  persisted in localStorage (`pm-tool.jira-search-chips`); chips AND with keyword/JQL.
+- [x] Multi-select with cross-page selection and **Link N selected** (reuses the existing
+  `/jira/links/bulk` endpoint). Epic→project picker stays single-link.
+- [ ] Browser click-through not yet driven (needs live Jira): paging, chip toggle re-search,
+  select across pages then bulk link.
+
 ## Deferred / out of scope
 
 - [~] Writing back to Jira (comments, status transitions, dates).

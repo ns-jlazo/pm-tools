@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import List, Optional
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -95,9 +95,14 @@ def jira_health() -> schemas.JiraHealth:
 @router.get("/jira/search", response_model=schemas.JiraSearchResponse)
 def jira_search(
     jql: str = Query(..., min_length=1, description="JQL to execute"),
-    limit: int = Query(25, ge=1, le=100),
+    limit: int = Query(10, ge=1, le=100),
+    next_page_token: Optional[str] = Query(
+        None, description="Token from a previous response's next_page_token"
+    ),
 ) -> schemas.JiraSearchResponse:
-    return _handle_jira_call(service.search, jql=jql, limit=limit)
+    return _handle_jira_call(
+        service.search, jql=jql, limit=limit, next_page_token=next_page_token
+    )
 
 
 @router.get("/jira/labels", response_model=schemas.JiraLabelSuggestions)

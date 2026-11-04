@@ -91,14 +91,24 @@ Three surfaces do the same thing; pick whichever is closest to hand:
 
 - **Update deliverable** panel — pick a deliverable, then click **Link story** in
   the Jira-stories section.
-- **Create deliverable** panel — **Pick Jira story** queues keys that are linked
+- **Create deliverable** panel — **Select Jira stories** queues keys that are linked
   automatically once the deliverable is saved.
 - **Timeline** — click a deliverable bar and use the **Jira stories** section in
   the quick-edit popover.
 
 In every picker, the **From linked epics** tab lists the stories under the
 project's linked epics (honoring the status filter and marking keys already
-linked); **Search** and **Search by Jira Ticket ID** work as before.
+linked); **Search by Jira Ticket ID** works as before.
+
+All lists show **10 results per page** with *Previous* / *Next page* buttons above
+and below the list. **Search** adds:
+
+- **Quick filter chips** — `project = SNA`, `project = PESRE`, `issueType = Epic`,
+  `issueType = Story`. Click to toggle; selected chips are ANDed with the keyword or
+  JQL. `project = SNA` is on by default (click it to deselect); the choice is
+  remembered in the browser. The exact JQL that runs is shown under the chips.
+- **Multi-select** — tick stories (selection survives page changes), or use
+  *Select page*, then **Link N selected** to link them in one bulk call.
 
 Programmatic:
 
