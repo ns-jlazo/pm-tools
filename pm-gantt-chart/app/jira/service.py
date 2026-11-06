@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -393,15 +394,101 @@ def suggest_labels(
     )
 
 
+def _epic_start_field() -> Optional[str]:
+    """Tenant-specific custom field holding an epic's start date, if configured."""
+    value = (os.environ.get("JIRA_EPIC_START_FIELD") or "").strip()
+    return value or None
+
+
+def _epic_dates(raw_json: str) -> Tuple[Optional[date], Optional[date]]:
+    """(start, due) of an epic from its cached `raw_json`; either may be None."""
+    try:
+        fields = (json.loads(raw_json) or {}).get("fields") or {}
+    except (TypeError, ValueError):
+        return None, None
+    field = _epic_start_field()
+    start = _parse_date(fields.get(field)) if field else None
+    return start, _parse_date(fields.get("duedate"))
+
+
+def _effective_range(
+    epic: Optional[Tuple[Optional[date], Optional[date]]], story_due: Optional[date]
+) -> Tuple[Optional[date], Optional[date]]:
+    """The parent epic's dates, else the story's due date, else undated."""
+    if epic is not None and (epic[0] or epic[1]):
+        start, end = epic
+    elif story_due is not None:
+        start, end = None, story_due
+    else:
+        return None, None
+    # A one-sided range is a single known day.
+    return start or end, end or start
+
+
+def _overlaps(
+    start: Optional[date],
+    end: Optional[date],
+    date_from: Optional[date],
+    date_to: Optional[date],
+) -> bool:
+    if start is None or end is None:
+        return True  # undated stories are kept, and flagged for the caller
+    if date_from is not None and end < date_from:
+        return False
+    if date_to is not None and start > date_to:
+        return False
+    return True
+
+
+def _linked_in_by_key(
+    db: Session, project_id: int
+) -> Dict[str, List[schemas.JiraLinkedIn]]:
+    """Which of the workspace's deliverables already carry each Jira key."""
+    grouped = list_project_deliverable_links(
+        db, project_id, refresh_stale=False
+    ).links_by_deliverable
+    if not grouped:
+        return {}
+    titles = {
+        row.id: row.title
+        for row in db.scalars(
+            select(models.Deliverable).where(models.Deliverable.id.in_(list(grouped)))
+        )
+    }
+    by_key: Dict[str, List[schemas.JiraLinkedIn]] = {}
+    for deliverable_id, links in grouped.items():
+        for link in links:
+            by_key.setdefault(link.issue.key, []).append(
+                schemas.JiraLinkedIn(
+                    deliverable_id=deliverable_id,
+                    title=titles.get(deliverable_id, ""),
+                )
+            )
+    return by_key
+
+
 def search_by_label(
-    label: str, project_key: Optional[str] = None, limit: int = 100
+    label: str,
+    project_key: Optional[str] = None,
+    limit: int = 500,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    db: Optional[Session] = None,
+    project_id: Optional[int] = None,
 ) -> schemas.JiraLabelSearchResponse:
-    """Every issue in `project_key` carrying `label`, newest first."""
+    """Every issue in `project_key` carrying `label`, newest first.
+
+    With `db`, each story is placed in time by its parent epic (fetched in one
+    batch and cached) and the date window filters on that; with `project_id`
+    too, each story reports which deliverables already link it.
+    """
     # A label picked from the typeahead before it started unquoting — or pasted
     # out of a JQL snippet — arrives wrapped in quotes; search for the name.
     cleaned = _unquote_jql(label or "")
     if not cleaned:
         raise ValueError("A Jira label is required.")
+    if date_from and date_to and date_from > date_to:
+        raise ValueError("The start date must be on or before the end date.")
     key = label_project_key(project_key)
     jql = (
         f'project = "{_quote_jql(key)}" AND labels = "{_quote_jql(cleaned)}" '
@@ -409,13 +496,149 @@ def search_by_label(
     )
     client = get_client()
     raws = client.search_all_issues(jql=jql, max_results=limit)
+    # The caller's cap was hit, so there may be more behind it.
+    truncated = len(raws) >= limit
+
+    epics: Dict[str, models.JiraIssue] = {}
+    linked_in: Dict[str, List[schemas.JiraLinkedIn]] = {}
+    if db is not None:
+        now = datetime.utcnow()
+        for raw in raws:
+            _upsert_issue(db, raw, client.url, now)
+        db.commit()
+        parent_keys = {
+            (raw.get("fields") or {}).get("parent", {}).get("key")
+            for raw in raws
+            if (raw.get("fields") or {}).get("parent")
+        }
+        epics = sync_keys(db, [k for k in parent_keys if k])
+        if project_id is not None:
+            linked_in = _linked_in_by_key(db, project_id)
+
+    issues: List[schemas.JiraLabelIssue] = []
+    for raw in raws:
+        base = _to_search_result(raw, client.url)
+        epic = epics.get(base.parent_key or "")
+        start, end = _effective_range(
+            _epic_dates(epic.raw_json) if epic is not None else None, base.due_date
+        )
+        if not _overlaps(start, end, date_from, date_to):
+            continue
+        issues.append(
+            schemas.JiraLabelIssue(
+                **base.model_dump(),
+                labels=list((raw.get("fields") or {}).get("labels") or []),
+                epic_key=base.parent_key,
+                epic_summary=epic.summary if epic is not None else "",
+                effective_start=start,
+                effective_end=end,
+                undated=start is None,
+                linked_in=linked_in.get(base.key, []),
+            )
+        )
     return schemas.JiraLabelSearchResponse(
-        project_key=key,
-        label=cleaned,
-        issues=[_to_search_result(raw, client.url) for raw in raws],
-        # The caller's cap was hit, so there may be more behind it.
-        truncated=len(raws) >= limit,
+        project_key=key, label=cleaned, issues=issues, truncated=truncated
     )
+
+
+# ------------------------------------------------------------------ label sync
+
+# (label, project key, from, to) a cached result was fetched with, so a changed
+# label or window is never answered from a stale entry.
+_LabelSignature = Tuple[str, str, Optional[date], Optional[date]]
+# deliverable id -> (monotonic fetch time, signature, issue keys, truncated)
+_label_sync_cache: Dict[int, Tuple[float, _LabelSignature, List[str], bool]] = {}
+
+
+def _linked_keys(db: Session, deliverable_id: int) -> set:
+    return {
+        link.issue.jira_key
+        for link in _load_links(db, _DELIVERABLE_LINKS, deliverable_id)
+    }
+
+
+def sync_labels(
+    db: Session,
+    project_id: int,
+    force: bool = False,
+    deliverable_id: Optional[int] = None,
+) -> schemas.JiraLabelSyncResponse:
+    """Report each labelled deliverable's stories that are not linked yet.
+
+    Surface-only: it refreshes the issue cache and counts what is new, but never
+    links anything — the user decides what to link. Per-deliverable results are
+    re-used for `JIRA_SYNC_TTL_SECONDS` unless `force`; a cached answer is still
+    compared against the current links, so linking stories clears the badge.
+    Jira trouble comes back as `error`, never as an exception.
+    """
+    if db.get(models.Project, project_id) is None:
+        raise ValueError("Project not found.")
+
+    stmt = select(models.Deliverable).where(
+        models.Deliverable.project_id == project_id,
+        models.Deliverable.jira_label.is_not(None),
+    )
+    if deliverable_id is not None:
+        stmt = stmt.where(models.Deliverable.id == deliverable_id)
+        force = True  # an explicit per-deliverable check is never throttled
+    deliverables = list(db.scalars(stmt.order_by(models.Deliverable.id)))
+
+    ttl = _ttl_seconds()
+    results: List[schemas.JiraLabelSyncItem] = []
+    for deliverable in deliverables:
+        signature: _LabelSignature = (
+            deliverable.jira_label,
+            deliverable.jira_label_project_key or "",
+            deliverable.jira_label_from,
+            deliverable.jira_label_to,
+        )
+        cached = _label_sync_cache.get(deliverable.id)
+        fresh = (
+            not force
+            and cached is not None
+            and cached[1] == signature
+            and time.monotonic() - cached[0] < ttl
+        )
+        item = schemas.JiraLabelSyncItem(
+            deliverable_id=deliverable.id, label=deliverable.jira_label
+        )
+        try:
+            if fresh:
+                keys, truncated = cached[2], cached[3]
+                item.cached = True
+            else:
+                response = search_by_label(
+                    deliverable.jira_label,
+                    project_key=deliverable.jira_label_project_key,
+                    date_from=deliverable.jira_label_from,
+                    date_to=deliverable.jira_label_to,
+                    db=db,
+                    project_id=project_id,
+                )
+                keys = [issue.key for issue in response.issues]
+                truncated = response.truncated
+                _label_sync_cache[deliverable.id] = (
+                    time.monotonic(),
+                    signature,
+                    keys,
+                    truncated,
+                )
+        except JiraNotConfigured as exc:
+            return schemas.JiraLabelSyncResponse(results=results, error=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Label sync failed for deliverable %s: %s", deliverable.id, exc
+            )
+            item.error = "Could not check Jira for this label."
+            results.append(item)
+            continue
+        linked = _linked_keys(db, deliverable.id)
+        item.total = len(keys)
+        item.new_keys = [key for key in keys if key not in linked]
+        item.new_count = len(item.new_keys)
+        item.truncated = truncated
+        results.append(item)
+    return schemas.JiraLabelSyncResponse(results=results)
 
 
 def sync_keys(db: Session, keys: Sequence[str]) -> Dict[str, models.JiraIssue]:

@@ -89,9 +89,9 @@ curl -sX POST http://localhost:8001/api/projects/1/jira/links \
 
 Three surfaces do the same thing; pick whichever is closest to hand:
 
-- **Update deliverable** panel — pick a deliverable, then click **Link story** in
+- **Update deliverable** panel — pick a deliverable, then click **Find & Link jira stories** in
   the Jira-stories section.
-- **Create deliverable** panel — **Select Jira stories** queues keys that are linked
+- **Create deliverable** panel — **Find & Link jira stories** queues keys that are linked
   automatically once the deliverable is saved.
 - **Timeline** — click a deliverable bar and use the **Jira stories** section in
   the quick-edit popover.

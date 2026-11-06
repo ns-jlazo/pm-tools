@@ -341,6 +341,22 @@ deliverable 2 → SNA-28969).
 - [ ] Browser click-through not yet driven (needs live Jira): paging, chip toggle re-search,
   select across pages then bulk link.
 
+## Phase: Deliverable Jira labels
+
+- [x] `deliverables.jira_label`, `jira_label_project_key`, `jira_label_from`, `jira_label_to`
+  (nullable; `_migrate_jira_label` adds them in place). Label trimmed, blank → null,
+  `from <= to` enforced.
+- [x] `GET /api/jira/labels/issues`: date window (parent epic dates → story due date →
+  undated), up to 500 results, `labels`/`epic_*`/`effective_*`/`linked_in` per story.
+  Optional `JIRA_EPIC_START_FIELD` for the tenant's epic start-date field.
+- [x] `POST /api/projects/{id}/jira/label-sync`: surface-only "N new" counts, per-deliverable
+  TTL throttle, soft failure.
+- [x] Picker: quarter control, row list with New / Linked here / Linked to pills,
+  **Link selected (N)**, **Set as deliverable label**; form label chip; roster badge;
+  triggers on workspace open, label save, tab refocus, deliverable open and a manual button.
+- [ ] Browser click-through not yet driven (needs live Jira).
+- [~] Optional interval auto-check and a server-side scheduler — not built.
+
 ## Deferred / out of scope
 
 - [~] Writing back to Jira (comments, status transitions, dates).

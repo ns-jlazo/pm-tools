@@ -49,6 +49,8 @@ uvicorn after editing it, then check `GET /api/jira/health`.
 - `POST /api/projects/{project_id}/import/csv`
 - `GET /api/projects/{project_id}/jira/deliverable-links` (bulk, backs the timeline overlay)
 - `GET|POST|DELETE /api/deliverables/{deliverable_id}/jira[/links[/{link_id}]]`
+- `GET /api/jira/labels/issues` (`label`, `project_key`, `date_from`, `date_to`, `project_id`)
+- `POST /api/projects/{project_id}/jira/label-sync` (counts unlinked stories per labelled deliverable; never links)
 
 Legacy databases are migrated in place on startup: the `task*` tables and
 columns are renamed to `deliverable*`.

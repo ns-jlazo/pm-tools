@@ -2,7 +2,7 @@ from typing import Dict, List, Optional
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ProjectCreate(BaseModel):
@@ -136,6 +136,13 @@ class MilestoneRead(BaseModel):
     risk_level: str
 
 
+def _blank_to_none(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
 class DeliverableBase(BaseModel):
     project_id: Optional[int] = None
     title: str = Field(min_length=1, max_length=200)
@@ -149,6 +156,15 @@ class DeliverableBase(BaseModel):
     progress: int = Field(default=0, ge=0, le=100)
     dependency_ids: List[int] = Field(default_factory=list)
     contributor_team_ids: List[int] = Field(default_factory=list)
+    jira_label: Optional[str] = Field(default=None, max_length=100)
+    jira_label_project_key: Optional[str] = Field(default=None, max_length=50)
+    jira_label_from: Optional[date] = None
+    jira_label_to: Optional[date] = None
+
+    @field_validator("jira_label", "jira_label_project_key")
+    @classmethod
+    def _blank_to_none(cls, value: Optional[str]) -> Optional[str]:
+        return _blank_to_none(value)
 
 
 class DeliverableCreate(DeliverableBase):
@@ -167,6 +183,15 @@ class DeliverableUpdate(BaseModel):
     progress: Optional[int] = Field(default=None, ge=0, le=100)
     dependency_ids: Optional[List[int]] = None
     contributor_team_ids: Optional[List[int]] = None
+    jira_label: Optional[str] = Field(default=None, max_length=100)
+    jira_label_project_key: Optional[str] = Field(default=None, max_length=50)
+    jira_label_from: Optional[date] = None
+    jira_label_to: Optional[date] = None
+
+    @field_validator("jira_label", "jira_label_project_key")
+    @classmethod
+    def _blank_to_none(cls, value: Optional[str]) -> Optional[str]:
+        return _blank_to_none(value)
 
 
 class DeliverableRead(BaseModel):
@@ -193,6 +218,10 @@ class DeliverableRead(BaseModel):
     dependency_slip_days: int
     milestone_slip_days: int
     risk_reasons: List[str]
+    jira_label: Optional[str] = None
+    jira_label_project_key: Optional[str] = None
+    jira_label_from: Optional[date] = None
+    jira_label_to: Optional[date] = None
     # Embedded rather than fetched per row: the timeline renders milestone
     # sub-rows straight from the dashboard payload.
     milestones: List[MilestoneRead] = Field(default_factory=list)
@@ -288,11 +317,50 @@ class JiraLabelSuggestions(BaseModel):
     source: str = "suggestions"
 
 
+class JiraLinkedIn(BaseModel):
+    """A deliverable in the workspace that already has a story linked."""
+
+    deliverable_id: int
+    title: str
+
+
+class JiraLabelIssue(JiraSearchResult):
+    """A label-search hit, annotated for the deliverable label picker."""
+
+    labels: List[str] = Field(default_factory=list)
+    epic_key: Optional[str] = None
+    epic_summary: str = ""
+    # The epic's dates, else the story's due date. Both None means undated.
+    effective_start: Optional[date] = None
+    effective_end: Optional[date] = None
+    undated: bool = False
+    linked_in: List[JiraLinkedIn] = Field(default_factory=list)
+
+
 class JiraLabelSearchResponse(BaseModel):
     project_key: str
     label: str
-    issues: List[JiraSearchResult] = Field(default_factory=list)
+    issues: List[JiraLabelIssue] = Field(default_factory=list)
     truncated: bool = False
+
+
+class JiraLabelSyncItem(BaseModel):
+    deliverable_id: int
+    label: str
+    total: int = 0
+    new_keys: List[str] = Field(default_factory=list)
+    new_count: int = 0
+    truncated: bool = False
+    # True when served from the throttle cache rather than a fresh Jira search.
+    cached: bool = False
+    error: Optional[str] = None
+
+
+class JiraLabelSyncResponse(BaseModel):
+    """Surface-only: reports stories not yet linked, never links anything."""
+
+    results: List[JiraLabelSyncItem] = Field(default_factory=list)
+    error: Optional[str] = None
 
 
 class ProjectJiraLinkRead(BaseModel):

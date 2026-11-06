@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import List, Optional
 
 import requests
@@ -120,10 +121,49 @@ def jira_labels(
 def jira_label_issues(
     label: str = Query(..., min_length=1, description="Exact Jira label"),
     project_key: str = Query("", description="Overrides JIRA_LABEL_PROJECT_KEY"),
-    limit: int = Query(100, ge=1, le=100),
+    limit: int = Query(500, ge=1, le=500),
+    date_from: Optional[date] = Query(
+        None, description="Keep stories whose epic/due dates reach this day or later"
+    ),
+    date_to: Optional[date] = Query(
+        None, description="Keep stories whose epic/due dates start by this day"
+    ),
+    project_id: Optional[int] = Query(
+        None, description="Annotate stories already linked to this workspace's deliverables"
+    ),
+    db: Session = Depends(get_db),
 ) -> schemas.JiraLabelSearchResponse:
     return _handle_jira_call(
-        service.search_by_label, label=label, project_key=project_key, limit=limit
+        service.search_by_label,
+        label=label,
+        project_key=project_key,
+        limit=limit,
+        date_from=date_from,
+        date_to=date_to,
+        db=db,
+        project_id=project_id,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/jira/label-sync",
+    response_model=schemas.JiraLabelSyncResponse,
+)
+def project_jira_label_sync(
+    project_id: int,
+    force: bool = Query(False, description="Bypass the JIRA_SYNC_TTL_SECONDS throttle"),
+    deliverable_id: Optional[int] = Query(
+        None, description="Check a single deliverable instead of the whole workspace"
+    ),
+    db: Session = Depends(get_db),
+) -> schemas.JiraLabelSyncResponse:
+    """Count unlinked stories per labelled deliverable. Never links anything."""
+    return _handle_jira_call(
+        service.sync_labels,
+        db,
+        project_id,
+        force=force,
+        deliverable_id=deliverable_id,
     )
 
 

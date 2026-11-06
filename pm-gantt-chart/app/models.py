@@ -146,6 +146,12 @@ class Deliverable(Base):
     current_end: Mapped[Optional[Date]] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(30), default="planned", nullable=False)
     progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Jira label that tags this deliverable's stories, plus the optional project
+    # and date window it was searched with. One label per deliverable.
+    jira_label: Mapped[Optional[str]] = mapped_column(String(100))
+    jira_label_project_key: Mapped[Optional[str]] = mapped_column(String(50))
+    jira_label_from: Mapped[Optional[Date]] = mapped_column(Date)
+    jira_label_to: Mapped[Optional[Date]] = mapped_column(Date)
 
     project: Mapped[Project] = relationship("Project", back_populates="deliverables")
     team: Mapped[Team] = relationship("Team", back_populates="deliverables")

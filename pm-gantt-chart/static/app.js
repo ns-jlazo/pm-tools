@@ -932,7 +932,7 @@ function JiraPickerModal({
       <div className="jira-modal" onClick=${(event) => event.stopPropagation()}>
         <header className="jira-modal-header">
           <h3>${title}</h3>
-          <button className="button-secondary" type="button" onClick=${onClose}>Close</button>
+          <${CloseButton} onClose=${onClose} />
         </header>
 
         <div className="jira-modal-tabs">
@@ -2033,7 +2033,7 @@ function JiraWorkItemLinks({
       <div className="jira-task-header">
         <strong>Jira stories</strong>
         <button className="button-secondary" type="button" onClick=${() => { setPickerError(""); setShowPicker(true); }}>
-          Link story
+          Find & Link jira stories
         </button>
       </div>
       ${loading && !links.length
@@ -2461,7 +2461,13 @@ function RecalcProgressButton({ scope = "deliverables", itemId, onProgress, onMe
   `;
 }
 
+function CloseButton({ onClose }) {
+  return html`<button className="modal-close" type="button" aria-label="Close" onClick=${onClose}>×</button>`;
+}
+
 function DeliverableForm({
+  formId,
+  hideActions,
   teams,
   deliverables,
   form,
@@ -2552,7 +2558,7 @@ function DeliverableForm({
     });
 
   return html`
-    <form onSubmit=${onSubmit}>
+    <form id=${formId} onSubmit=${onSubmit}>
       <div className="form-grid">
         <div className="field-wide">
           <label htmlFor=${fieldId("title")}>Title</label>
@@ -2676,7 +2682,7 @@ function DeliverableForm({
                   className="button-secondary"
                   type="button"
                   onClick=${() => { setPickerError(""); setShowPicker(true); }}
-                >Select Jira stories</button>
+                >Find & Link jira stories</button>
               </div>
               ${pendingKeys.length
                 ? html`
@@ -2701,10 +2707,10 @@ function DeliverableForm({
           `
         : null}
 
-      <div className="field-wide jira-label-field">
+      ${form.jira_label
+        ? html`<div className="field-wide jira-label-field">
         <label>Jira label</label>
-        ${form.jira_label
-          ? html`<div className="jira-chip">
+        <div className="jira-chip">
               <span>${form.jira_label}</span>
               ${form.jira_label_project_key
                 ? html`<span className="tiny-pill">${form.jira_label_project_key}</span>`
@@ -2720,18 +2726,15 @@ function DeliverableForm({
                 onClick=${clearLabel}
                 aria-label="Clear Jira label"
               >×</button>
-            </div>`
-          : html`<div className="help-text">
-              None — use “By label” in the Jira picker and choose “Set as deliverable label”.
-            </div>`}
-        <span className="help-text">
-          The label's stories are re-checked for new ones; nothing links until you pick it.
-        </span>
-      </div>
+            </div>
+      </div>`
+        : null}
 
-      <div className="actions">
+      ${hideActions
+        ? null
+        : html`<div className="actions">
             <button className="button-primary" type="submit" disabled=${submitting} aria-busy=${submitting}>${submitLabel}</button>
-      </div>
+          </div>`}
 
       ${showPicker
         ? html`
@@ -2902,7 +2905,7 @@ function MilestoneForm({
                   className="button-secondary"
                   type="button"
                   onClick=${() => { setPickerError(""); setShowPicker(true); }}
-                >Select Jira stories</button>
+                >Find & Link jira stories</button>
               </div>
               ${pendingKeys.length
                 ? html`
@@ -3405,7 +3408,7 @@ function EditorModal({ title, subtitle, wide, onClose, children }) {
       >
         <header className="jira-modal-header">
           <h3>${title}</h3>
-          <button className="button-secondary" type="button" onClick=${onClose}>Close</button>
+          <${CloseButton} onClose=${onClose} />
         </header>
         ${subtitle ? html`<p className="help-text">${subtitle}</p>` : null}
         ${children}
@@ -3611,6 +3614,8 @@ function DeliverableEditorModal({
           form=${form}
           setForm=${setForm}
           onSubmit=${onSave}
+          formId="deliverable-form"
+          hideActions=${true}
           submitLabel=${creating ? "Create deliverable" : "Save deliverable"}
           submitting=${submitting}
           idPrefix=${creating ? "deliverable-create" : "deliverable-edit"}
@@ -3646,6 +3651,15 @@ function DeliverableEditorModal({
                 }}
               />
             `}
+        <div className="actions">
+          <button
+            className="button-primary"
+            type="submit"
+            form="deliverable-form"
+            disabled=${submitting}
+            aria-busy=${submitting}
+          >${creating ? "Create deliverable" : "Save deliverable"}</button>
+        </div>
     <//>
   `;
 }
@@ -4556,7 +4570,7 @@ function ProjectSettingsDrawer({
       <div className="team-drawer" onClick=${(event) => event.stopPropagation()}>
         <header className="team-drawer-header">
           <h2 style=${{ margin: 0 }}>Edit workspace</h2>
-          <button className="button-secondary" type="button" onClick=${onClose}>Close</button>
+          <${CloseButton} onClose=${onClose} />
         </header>
 
         <form onSubmit=${save}>

@@ -2167,3 +2167,41 @@ th {
   gap: 4px;
   margin-left: 8px;
 }
+
+.jira-modal,
+.team-drawer {
+  position: relative;
+}
+
+.jira-modal-header,
+.team-drawer-header {
+  padding-right: 36px;
+}
+
+.modal-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #dc2626;
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.modal-close:hover {
+  background: #b91c1c;
+}
+
+.modal-close:focus-visible {
+  outline: 2px solid #fca5a5;
+  outline-offset: 2px;
+}

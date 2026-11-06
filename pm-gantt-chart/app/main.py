@@ -158,6 +158,33 @@ def _migrate_release_date(bind=None) -> None:
         connection.execute(text("ALTER TABLE projects ADD COLUMN release_date DATE"))
 
 
+def _migrate_jira_label(bind=None) -> None:
+    """Add the `deliverables.jira_label*` columns.
+
+    Same reason as `_migrate_release_date`: `create_all` never adds columns to an
+    existing table. All four are nullable, so existing rows stay untouched.
+    Idempotent via the column check.
+    """
+    bind = bind if bind is not None else engine
+    inspector = inspect(bind)
+    if "deliverables" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("deliverables")}
+    wanted = {
+        "jira_label": "VARCHAR(100)",
+        "jira_label_project_key": "VARCHAR(50)",
+        "jira_label_from": "DATE",
+        "jira_label_to": "DATE",
+    }
+    missing = {name: ddl for name, ddl in wanted.items() if name not in columns}
+    if not missing:
+        return
+
+    with bind.begin() as connection:
+        for name, ddl in missing.items():
+            connection.execute(text(f"ALTER TABLE deliverables ADD COLUMN {name} {ddl}"))
+
+
 def _ensure_v2_schema() -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -166,6 +193,7 @@ def _ensure_v2_schema() -> None:
     _migrate_deliverable_rename(engine)
     _migrate_example_flag(engine)
     _migrate_release_date(engine)
+    _migrate_jira_label(engine)
     # Adds any table an existing database is missing — the milestone tables, and
     # `project_key_dates`. New *columns* still need an explicit migration above.
     Base.metadata.create_all(bind=engine)
