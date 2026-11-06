@@ -38,6 +38,10 @@ const DEFAULT_DELIVERABLE = {
   dependency_ids: [],
   contributor_team_ids: [],
   jira_keys: [],
+  jira_label: "",
+  jira_label_project_key: "",
+  jira_label_from: "",
+  jira_label_to: "",
 };
 // A milestone is a piece of a deliverable: one target date instead of a
 // planned/current window, and no dependencies or contributing teams.
@@ -85,6 +89,38 @@ function startOfDay(value) {
     return next;
   }
   return new Date(`${value}T00:00:00`);
+}
+
+// Calendar quarters, as ISO dates (local — toISOString would shift the day).
+function isoDate(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function quarterRange(year, quarter) {
+  const firstMonth = (quarter - 1) * 3;
+  return {
+    from: isoDate(new Date(year, firstMonth, 1)),
+    to: isoDate(new Date(year, firstMonth + 3, 0)),
+  };
+}
+
+// "Q3 2026" for an ISO date, "" when there is none.
+function quarterOf(value) {
+  if (!value) return "";
+  const date = startOfDay(value);
+  return `Q${Math.floor(date.getMonth() / 3) + 1} ${date.getFullYear()}`;
+}
+
+// The window a saved from/to pair represents, for the picker's quarter control.
+function quarterSelection(from, to) {
+  if (!from && !to) return { mode: "all", year: new Date().getFullYear(), quarter: 0 };
+  for (let quarter = 1; quarter <= 4; quarter += 1) {
+    const year = from ? startOfDay(from).getFullYear() : new Date().getFullYear();
+    const range = quarterRange(year, quarter);
+    if (range.from === from && range.to === to) return { mode: "quarter", year, quarter };
+  }
+  return { mode: "custom", year: new Date().getFullYear(), quarter: 0 };
 }
 
 function differenceInDays(start, end) {
@@ -225,6 +261,75 @@ function writeStored(key, value) {
 // statuses the user has explicitly toggled, so anything in Jira's `done`
 // category is hidden with zero clicks and a status that shows up later still
 // inherits that default.
+// Surface-only label check: asks the server which labelled deliverables have
+// Jira stories that are not linked yet. It never links anything; the badge it
+// feeds just opens the picker. The server throttles by JIRA_SYNC_TTL_SECONDS, and
+// every failure is soft — a missing Jira config must not break the workspace.
+const LABEL_SYNC_REFOCUS_MS = 60 * 1000;
+
+function useLabelSync(projectId, onMessage) {
+  const [byDeliverable, setByDeliverable] = useState({});
+  const [checking, setChecking] = useState(false);
+  const lastRun = useRef(0);
+
+  const run = async ({ force = false, deliverableId = null, announce = false } = {}) => {
+    if (!projectId) return;
+    lastRun.current = Date.now();
+    setChecking(true);
+    try {
+      const query =
+        `force=${force ? "true" : "false"}` + (deliverableId ? `&deliverable_id=${deliverableId}` : "");
+      const payload = await api(`/api/projects/${projectId}/jira/label-sync?${query}`, {
+        method: "POST",
+      });
+      if (payload.error) {
+        if (announce) onMessage(payload.error, "error");
+        return;
+      }
+      setByDeliverable((current) => {
+        // A whole-project run is authoritative (labels may have been removed); a
+        // single-deliverable run only updates its own entry.
+        const next = deliverableId ? { ...current } : {};
+        for (const item of payload.results || []) next[item.deliverable_id] = item;
+        return next;
+      });
+      if (announce) {
+        const total = (payload.results || []).reduce((sum, item) => sum + item.new_count, 0);
+        onMessage(
+          total
+            ? `${total} new Jira ${total === 1 ? "story" : "stories"} found for labelled deliverables.`
+            : "No new Jira stories for labelled deliverables.",
+          "success"
+        );
+      }
+    } catch (err) {
+      if (announce) onMessage(err.message, "error");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  // On opening a workspace the dashboard has already rendered; the badges fill
+  // in when this resolves.
+  useEffect(() => {
+    setByDeliverable({});
+    run();
+  }, [projectId]);
+
+  // People leave a workspace open all day: re-check when the tab comes back.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && Date.now() - lastRun.current > LABEL_SYNC_REFOCUS_MS) {
+        run();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [projectId]);
+
+  return { byDeliverable, checking, run };
+}
+
 function useJiraStatusFilter(projectId) {
   const storageKey = `${STATUS_FILTER_PREFIX}${projectId}`;
   const [overrides, setOverrides] = useState(() => readStored(storageKey, {}));
@@ -422,6 +527,42 @@ function JiraResultRow({ issue, linked, selected, onToggle, onLink, submitting }
   `;
 }
 
+// One "By label" result: selectable, with a pill saying whether the story is new,
+// already on this deliverable, or held by another one (selectable, with a warning).
+function JiraLabelRow({ issue, linkedHere, selected, onToggle }) {
+  const elsewhere = issue.linked_in || [];
+  const quarter = quarterOf(issue.effective_end);
+  return html`
+    <div className=${`jira-result-row ${selected ? "selected" : ""}`}>
+      <div className="jira-result-main">
+        <input
+          type="checkbox"
+          className="jira-select-box"
+          aria-label=${`Select ${issue.key}`}
+          checked=${selected}
+          disabled=${linkedHere}
+          onChange=${() => onToggle(issue)}
+        />
+        <a className="jira-result-key" href=${issue.url} target="_blank" rel="noreferrer">${issue.key}</a>
+        <span className=${jiraStatusClass(issue.status_category)}>${issue.status}</span>
+        ${linkedHere
+          ? html`<span className="tiny-pill">Linked here</span>`
+          : elsewhere.length
+          ? html`<span
+              className="tiny-pill jira-linked-elsewhere"
+              title="Linking it here as well is allowed, but the story will count toward both."
+            >Linked to “${elsewhere.map((item) => item.title).join("”, “")}”</span>`
+          : html`<span className="tiny-pill jira-new-pill">New</span>`}
+      </div>
+      <div className="jira-result-summary">${issue.summary}</div>
+      <div className="help-text">
+        ${issue.epic_key ? html`<span>${issue.epic_key}${issue.epic_summary ? ` · ${issue.epic_summary}` : ""}</span>` : "No epic"}
+        ${quarter ? html`<span> · ${quarter}</span>` : html`<span> · undated</span>`}
+      </div>
+    </div>
+  `;
+}
+
 function JiraSelectionBar({ visible, selected, alreadyLinked, submitting, onSelectPage, onClear, onLink }) {
   const pageSelectable = visible.filter((issue) => !alreadyLinked.has(issue.key));
   const count = Object.keys(selected).length;
@@ -452,10 +593,15 @@ function JiraPickerModal({
   epicKeys,
   statusFilter,
   linkedKeys,
+  projectId,
+  initialLabel,
+  initialMode,
+  preselectKeys,
+  onSetLabel,
 }) {
   const hasEpics = Boolean(epicKeys && epicKeys.length);
   const canBulkLink = typeof onLinkMany === "function";
-  const [mode, setMode] = useState(hasEpics ? "epics" : "search");
+  const [mode, setMode] = useState(initialMode || (hasEpics ? "epics" : "search"));
   const [jql, setJql] = useState("");
   const [keyword, setKeyword] = useState("");
   const [results, setResults] = useState([]);
@@ -466,8 +612,18 @@ function JiraPickerModal({
   const [searched, setSearched] = useState(false);
   const [epicGroups, setEpicGroups] = useState(null);
   const [loadingEpics, setLoadingEpics] = useState(false);
-  const [label, setLabel] = useState("");
-  const [labelProjectKey, setLabelProjectKey] = useState("");
+  const saved = initialLabel || {};
+  const [label, setLabel] = useState(saved.label || "");
+  const [labelProjectKey, setLabelProjectKey] = useState(saved.projectKey || "");
+  // The quarter / custom window the label search is limited to. `range` is what
+  // is sent (and later saved with the label); `quarterPick` is just the control.
+  const [range, setRange] = useState({ from: saved.from || "", to: saved.to || "" });
+  const [quarterPick, setQuarterPick] = useState(() =>
+    quarterSelection(saved.from || "", saved.to || "")
+  );
+  const [hideUndated, setHideUndated] = useState(false);
+  const [labelSelected, setLabelSelected] = useState({});
+  const [labelSetNote, setLabelSetNote] = useState("");
   const [labelOptions, setLabelOptions] = useState([]);
   const [labelResult, setLabelResult] = useState(null);
   const [labelSearching, setLabelSearching] = useState(false);
@@ -522,8 +678,9 @@ function JiraPickerModal({
     return () => window.clearTimeout(handle);
   }, [mode, label, labelProjectKey]);
 
-  const runLabelSearch = async (event) => {
+  const runLabelSearch = async (event, rangeOverride) => {
     takeOver(event);
+    const window_ = rangeOverride || range;
     const cleaned = label.trim();
     if (!cleaned) {
       setError("Pick or type a Jira label to search.");
@@ -532,20 +689,32 @@ function JiraPickerModal({
     setError("");
     setLabelSearching(true);
     try {
-      const payload = await api(
-        `/api/jira/labels/issues?label=${encodeURIComponent(cleaned)}` +
-          `&project_key=${encodeURIComponent(labelProjectKey.trim())}&limit=100`
-      );
+      const params =
+        `label=${encodeURIComponent(cleaned)}` +
+        `&project_key=${encodeURIComponent(labelProjectKey.trim())}&limit=500` +
+        (window_.from ? `&date_from=${window_.from}` : "") +
+        (window_.to ? `&date_to=${window_.to}` : "") +
+        (projectId ? `&project_id=${projectId}` : "");
+      const payload = await api(`/api/jira/labels/issues?${params}`);
       setLabelResult(payload);
       setLabelPage(0);
       if (statusFilter) statusFilter.registerStatuses(payload.issues || []);
+      // Pre-select what the caller asked for (the "N new" badge), else nothing:
+      // linking is always the user's explicit pick.
+      const wanted = new Set(preselectKeys || []);
+      const next = {};
+      for (const issue of payload.issues || []) {
+        if (wanted.has(issue.key) && !alreadyLinked.has(issue.key)) next[issue.key] = true;
+      }
+      setLabelSelected(next);
       if (!(payload.issues || []).length) {
         // A healthy Jira plus zero rows used to clear the error and say nothing.
         // The usual cause is a label that lives in another Jira project.
         setError(
           (await jiraTrouble()) ||
-            `No issues in Jira project ${payload.project_key} carry the label “${payload.label}”. ` +
-              `Check the spelling, or change the Jira project if the label belongs to a different one.`
+            `No issues in Jira project ${payload.project_key} carry the label “${payload.label}”` +
+              `${window_.from || window_.to ? " in that date range" : ""}. ` +
+              `Check the spelling, the date range, or change the Jira project if the label belongs to a different one.`
         );
       }
     } catch (err) {
@@ -556,10 +725,54 @@ function JiraPickerModal({
     }
   };
 
+  // Changing the window re-runs the search, so the list always matches the control.
+  const applyRange = (nextPick, nextRange) => {
+    setQuarterPick(nextPick);
+    setRange(nextRange);
+    setLabelSetNote("");
+    if (label.trim()) runLabelSearch(null, nextRange);
+  };
+  const pickQuarter = (quarter) =>
+    applyRange(
+      { ...quarterPick, mode: "quarter", quarter },
+      quarterRange(quarterPick.year, quarter)
+    );
+  const pickYear = (year) =>
+    quarterPick.mode === "quarter"
+      ? applyRange({ ...quarterPick, year }, quarterRange(year, quarterPick.quarter))
+      : setQuarterPick({ ...quarterPick, year });
+
+  // Opened from a deliverable that already has a label (or its "N new" badge):
+  // show its stories straight away.
+  useEffect(() => {
+    if (initialMode === "label" && saved.label) runLabelSearch(null);
+  }, []);
+
+  const setAsDeliverableLabel = () => {
+    const cleaned = label.trim();
+    if (!cleaned || typeof onSetLabel !== "function") return;
+    onSetLabel({
+      label: cleaned,
+      projectKey: labelProjectKey.trim(),
+      from: range.from,
+      to: range.to,
+    });
+    setLabelSetNote(`“${cleaned}” will be saved as this deliverable's label — save the deliverable to keep it.`);
+  };
+
   const labelIssues = (labelResult && labelResult.issues) || [];
-  const labelVisible = statusFilter ? statusFilter.apply(labelIssues) : labelIssues;
+  const labelStatusVisible = statusFilter ? statusFilter.apply(labelIssues) : labelIssues;
+  const labelUndatedCount = labelStatusVisible.filter((issue) => issue.undated).length;
+  const labelVisible = hideUndated
+    ? labelStatusVisible.filter((issue) => !issue.undated)
+    : labelStatusVisible;
   const labelHidden = labelIssues.length - labelVisible.length;
   const labelToLink = labelVisible.filter((issue) => !alreadyLinked.has(issue.key));
+  // "New" = not linked to this deliverable and not linked to another one either.
+  const labelNew = labelToLink.filter((issue) => !(issue.linked_in || []).length);
+  const labelSelectedKeys = Object.keys(labelSelected).filter((key) => labelSelected[key]);
+  const toggleLabelIssue = (issue) =>
+    setLabelSelected((current) => ({ ...current, [issue.key]: !current[issue.key] }));
   // Derived from every story the label returned, so toggling the status filter
   // does not move the number the deliverable's progress is seeded with.
   const labelInProgress = labelIssues.filter(isInProgressIssue).length;
@@ -892,18 +1105,73 @@ function JiraPickerModal({
                   <button className="button-secondary" type="submit" disabled=${labelSearching}>
                     ${labelSearching ? "Searching…" : "Find stories"}
                   </button>
-                  ${labelToLink.length
-                    ? html`
-                        <button
-                          className="button-primary"
-                          type="button"
-                          disabled=${submitting}
-                          onClick=${() => onLinkMany(labelToLink.map((issue) => issue.key), labelProgress)}
-                        >
-                          Link ${labelToLink.length} ${labelToLink.length === 1 ? "story" : "stories"}
-                        </button>
-                      `
+                  ${typeof onSetLabel === "function" && label.trim()
+                    ? html`<button
+                        className="button-secondary"
+                        type="button"
+                        onClick=${setAsDeliverableLabel}
+                      >Set as deliverable label</button>`
                     : null}
+                </div>
+                ${labelSetNote ? html`<div className="field-wide help-text">${labelSetNote}</div>` : null}
+                <div className="field-wide">
+                  <label>Quarter</label>
+                  <div className="jira-chip-picker">
+                    <button
+                      type="button"
+                      className=${`jira-query-chip ${quarterPick.mode === "all" ? "selected" : ""}`}
+                      aria-pressed=${quarterPick.mode === "all"}
+                      onClick=${() => applyRange({ ...quarterPick, mode: "all", quarter: 0 }, { from: "", to: "" })}
+                    >All</button>
+                    <select
+                      aria-label="Year"
+                      value=${quarterPick.year}
+                      onChange=${(event) => pickYear(Number(event.target.value))}
+                    >
+                      ${[-1, 0, 1, 2].map((offset) => {
+                        const year = new Date().getFullYear() + offset;
+                        return html`<option key=${year} value=${year}>${year}</option>`;
+                      })}
+                    </select>
+                    ${[1, 2, 3, 4].map(
+                      (quarter) => html`
+                        <button
+                          key=${quarter}
+                          type="button"
+                          className=${`jira-query-chip ${
+                            quarterPick.mode === "quarter" && quarterPick.quarter === quarter ? "selected" : ""
+                          }`}
+                          aria-pressed=${quarterPick.mode === "quarter" && quarterPick.quarter === quarter}
+                          onClick=${() => pickQuarter(quarter)}
+                        >Q${quarter}</button>
+                      `
+                    )}
+                    <button
+                      type="button"
+                      className=${`jira-query-chip ${quarterPick.mode === "custom" ? "selected" : ""}`}
+                      aria-pressed=${quarterPick.mode === "custom"}
+                      onClick=${() => setQuarterPick({ ...quarterPick, mode: "custom", quarter: 0 })}
+                    >Custom range</button>
+                  </div>
+                  ${quarterPick.mode === "custom"
+                    ? html`<div className="jira-chip-picker">
+                        <input
+                          type="date"
+                          aria-label="From"
+                          value=${range.from}
+                          onChange=${(event) => applyRange(quarterPick, { ...range, from: event.target.value })}
+                        />
+                        <input
+                          type="date"
+                          aria-label="To"
+                          value=${range.to}
+                          onChange=${(event) => applyRange(quarterPick, { ...range, to: event.target.value })}
+                        />
+                      </div>`
+                    : null}
+                  <span className="help-text">
+                    Stories are placed by their epic's dates, else their own due date. Saved with the label.
+                  </span>
                 </div>
               </form>
               ${statusFilter && labelIssues.length
@@ -916,10 +1184,20 @@ function JiraPickerModal({
                       ${" "}${labelResult.project_key} labelled ${labelResult.label}
                       ${labelHidden ? html`<span> · ${labelHidden} hidden by the status filter</span>` : null}
                       ${labelResult.truncated
-                        ? html`<span> · showing the first 100 matches</span>`
+                        ? html`<span> · showing the first 500 matches</span>`
                         : null}
                       ${labelVisible.length && !labelToLink.length
                         ? html`<span> · all already linked</span>`
+                        : null}
+                      ${labelUndatedCount
+                        ? html`<label className="jira-undated-toggle">
+                            <input
+                              type="checkbox"
+                              checked=${hideUndated}
+                              onChange=${(event) => setHideUndated(event.target.checked)}
+                            />
+                            Hide ${labelUndatedCount} undated
+                          </label>`
                         : null}
                       ${labelProgress === null
                         ? null
@@ -927,13 +1205,37 @@ function JiraPickerModal({
                             ${" "}· ${labelInProgress} in progress → seeds ${labelProgress}% progress
                           </span>`}
                     </div>
+                    <div className="jira-selection-bar">
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        disabled=${!labelNew.length}
+                        onClick=${() =>
+                          setLabelSelected(Object.fromEntries(labelNew.map((issue) => [issue.key, true])))}
+                      >Select all new (${labelNew.length})</button>
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        disabled=${!labelSelectedKeys.length}
+                        onClick=${() => setLabelSelected({})}
+                      >Clear</button>
+                      <span className="help-text">${labelSelectedKeys.length} selected</span>
+                      <button
+                        type="button"
+                        className="button-primary"
+                        disabled=${submitting || !labelSelectedKeys.length}
+                        onClick=${() => onLinkMany(labelSelectedKeys, labelProgress)}
+                      >Link selected (${labelSelectedKeys.length})</button>
+                    </div>
                     <div className="jira-results">
                       ${labelPaged.items.map(
                         (issue) => html`
-                          <${JiraResultRow}
+                          <${JiraLabelRow}
                             key=${issue.key}
                             issue=${issue}
-                            linked=${alreadyLinked.has(issue.key)}
+                            linkedHere=${alreadyLinked.has(issue.key)}
+                            selected=${Boolean(labelSelected[issue.key])}
+                            onToggle=${toggleLabelIssue}
                           />
                         `
                       )}
@@ -1195,6 +1497,8 @@ function JiraProjectPanel({
   statusFilter,
   onEpicsLoaded,
   onTeamsChanged,
+  onCheckLabels,
+  checkingLabels,
 }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1395,6 +1699,15 @@ function JiraProjectPanel({
           <button className="button-secondary" type="button" onClick=${forceSync} disabled=${loading}>
             ${loading ? "Refreshing…" : "Refresh"}
           </button>
+          ${onCheckLabels
+            ? html`<button
+                className="button-secondary"
+                type="button"
+                onClick=${onCheckLabels}
+                disabled=${checkingLabels}
+                title="Look for new Jira stories under each deliverable's label. Nothing is linked automatically."
+              >${checkingLabels ? "Checking…" : "Check for new stories"}</button>`
+            : null}
           <button className="button-primary" type="button" onClick=${() => { setPickerError(""); setShowPicker(true); }}>
             Link epic
           </button>
@@ -1594,10 +1907,16 @@ function JiraWorkItemLinks({
   teams,
   epicTeams,
   compact,
+  projectId,
+  labelContext,
+  onSetLabel,
+  autoOpen,
 }) {
   const [links, setLinks] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [showPicker, setShowPicker] = useState(false);
+  // `autoOpen` ({preselectKeys}) comes from a deliverable's "N new" badge: land
+  // straight in the label picker with the new stories ticked.
+  const [showPicker, setShowPicker] = useState(Boolean(autoOpen));
   const [submitting, setSubmitting] = useState(false);
   const [pickerError, setPickerError] = useState("");
   const noun = scopeNoun(scope);
@@ -1756,6 +2075,11 @@ function JiraWorkItemLinks({
               epicKeys=${epicKeys}
               statusFilter=${statusFilter}
               linkedKeys=${links.map((link) => link.issue.key)}
+              projectId=${scope === "deliverables" ? projectId : null}
+              initialLabel=${scope === "deliverables" ? labelContext : null}
+              initialMode=${autoOpen || (labelContext && labelContext.label) ? "label" : null}
+              preselectKeys=${autoOpen ? autoOpen.preselectKeys : null}
+              onSetLabel=${scope === "deliverables" ? onSetLabel : null}
             />
           `
         : null}
@@ -1777,6 +2101,10 @@ function deliverableToForm(deliverable) {
     dependency_ids: deliverable.dependency_ids.map(String),
     contributor_team_ids: (deliverable.contributor_team_ids || []).map(String),
     jira_keys: [],
+    jira_label: deliverable.jira_label || "",
+    jira_label_project_key: deliverable.jira_label_project_key || "",
+    jira_label_from: deliverable.jira_label_from || "",
+    jira_label_to: deliverable.jira_label_to || "",
   };
 }
 
@@ -1796,6 +2124,11 @@ function deliverablePayload(form, { includeJiraKeys = false } = {}) {
     progress: Number(form.progress),
     dependency_ids: (form.dependency_ids || []).map(Number),
     contributor_team_ids: (form.contributor_team_ids || []).map(Number),
+    // Empty strings are "no label yet"; the API reads null as an explicit clear.
+    jira_label: (form.jira_label || "").trim() || null,
+    jira_label_project_key: (form.jira_label_project_key || "").trim() || null,
+    jira_label_from: form.jira_label_from || null,
+    jira_label_to: form.jira_label_to || null,
     ...(includeJiraKeys ? { jira_keys: form.jira_keys || [] } : {}),
   };
 }
@@ -2142,6 +2475,7 @@ function DeliverableForm({
   statusFilter,
   deliverableId,
   onMessage,
+  projectId,
 }) {
   const handleField = (key) => (event) => setForm({ ...form, [key]: event.target.value });
   const fieldId = (name) => `${idPrefix}-${name}`;
@@ -2200,6 +2534,22 @@ function DeliverableForm({
   const removePendingJira = (key) => {
     setForm({ ...form, jira_keys: pendingKeys.filter((existing) => existing !== key) });
   };
+  const setLabelFromPicker = ({ label, projectKey, from, to }) =>
+    setForm({
+      ...form,
+      jira_label: label,
+      jira_label_project_key: projectKey,
+      jira_label_from: from,
+      jira_label_to: to,
+    });
+  const clearLabel = () =>
+    setForm({
+      ...form,
+      jira_label: "",
+      jira_label_project_key: "",
+      jira_label_from: "",
+      jira_label_to: "",
+    });
 
   return html`
     <form onSubmit=${onSubmit}>
@@ -2351,6 +2701,34 @@ function DeliverableForm({
           `
         : null}
 
+      <div className="field-wide jira-label-field">
+        <label>Jira label</label>
+        ${form.jira_label
+          ? html`<div className="jira-chip">
+              <span>${form.jira_label}</span>
+              ${form.jira_label_project_key
+                ? html`<span className="tiny-pill">${form.jira_label_project_key}</span>`
+                : null}
+              ${form.jira_label_from || form.jira_label_to
+                ? html`<span className="tiny-pill">
+                    ${form.jira_label_from || "…"} – ${form.jira_label_to || "…"}
+                  </span>`
+                : null}
+              <button
+                type="button"
+                className="jira-chip-remove"
+                onClick=${clearLabel}
+                aria-label="Clear Jira label"
+              >×</button>
+            </div>`
+          : html`<div className="help-text">
+              None — use “By label” in the Jira picker and choose “Set as deliverable label”.
+            </div>`}
+        <span className="help-text">
+          The label's stories are re-checked for new ones; nothing links until you pick it.
+        </span>
+      </div>
+
       <div className="actions">
             <button className="button-primary" type="submit" disabled=${submitting} aria-busy=${submitting}>${submitLabel}</button>
       </div>
@@ -2369,6 +2747,15 @@ function DeliverableForm({
               epicKeys=${epicKeys}
               statusFilter=${statusFilter}
               linkedKeys=${pendingKeys}
+              projectId=${projectId}
+              initialLabel=${{
+                label: form.jira_label,
+                projectKey: form.jira_label_project_key,
+                from: form.jira_label_from,
+                to: form.jira_label_to,
+              }}
+              initialMode=${form.jira_label ? "label" : null}
+              onSetLabel=${setLabelFromPicker}
             />
           `
         : null}
@@ -2613,6 +3000,8 @@ function DeliverableRosterPanel({
   csvFile,
   setCsvFile,
   onCsvSubmit,
+  projectId,
+  labelSync,
 }) {
   // Collapsed by default, keyed by deliverable id — same call as the chart's
   // milestone sub-rows: detail, not the first thing to read.
@@ -2638,9 +3027,17 @@ function DeliverableRosterPanel({
     setEditor({ kind: "deliverable-create" });
   };
 
-  const openDeliverableEdit = (deliverable) => {
+  // `newKeys` comes from the "N new" badge: the editor opens straight into the
+  // label picker with those stories ticked. Nothing is linked until the user
+  // clicks "Link selected".
+  const openDeliverableEdit = (deliverable, newKeys) => {
     setDeliverableDraft(deliverableToForm(deliverable));
-    setEditor({ kind: "deliverable-edit", id: deliverable.id });
+    setEditor({
+      kind: "deliverable-edit",
+      id: deliverable.id,
+      ...(newKeys ? { autoOpen: { preselectKeys: newKeys } } : {}),
+    });
+    if (labelSync) labelSync.run({ deliverableId: deliverable.id, force: true });
   };
 
   // The new milestone inherits its parent's team as a starting point; any team on
@@ -2684,7 +3081,10 @@ function DeliverableRosterPanel({
     const ok = await deliverableActions.create(
       deliverablePayload(deliverableDraft, { includeJiraKeys: true })
     );
-    if (ok) closeEditor();
+    if (ok) {
+      closeEditor();
+      if (labelSync) labelSync.run();
+    }
   };
 
   const submitDeliverableEdit = async (event) => {
@@ -2693,7 +3093,11 @@ function DeliverableRosterPanel({
       Number(editor.id),
       deliverablePayload(deliverableDraft)
     );
-    if (ok) closeEditor();
+    if (ok) {
+      // A label saved or changed is checked straight away.
+      if (labelSync) labelSync.run({ deliverableId: Number(editor.id), force: true });
+      closeEditor();
+    }
   };
 
   const submitMilestoneCreate = async (event) => {
@@ -2765,6 +3169,20 @@ function DeliverableRosterPanel({
               </span>
               <span className="tiny-pill">${humanizeStatus(deliverable.status)}</span>
               <span className="tiny-pill">${deliverable.progress}%</span>
+              ${deliverable.jira_label
+                ? html`<span className="tiny-pill" title="Jira label">🏷 ${deliverable.jira_label}</span>`
+                : null}
+              ${labelSync &&
+              labelSync.byDeliverable[deliverable.id] &&
+              labelSync.byDeliverable[deliverable.id].new_count
+                ? html`<button
+                    type="button"
+                    className="tiny-pill jira-new-badge"
+                    title="Jira stories with this label that are not linked yet — click to review"
+                    onClick=${() =>
+                      openDeliverableEdit(deliverable, labelSync.byDeliverable[deliverable.id].new_keys)}
+                  >${labelSync.byDeliverable[deliverable.id].new_count} new</button>`
+                : null}
               ${deliverable.at_risk
                 ? html`<span className=${`risk-badge ${deliverable.risk_level}`}>
                     ${deliverable.risk_level}
@@ -2882,6 +3300,7 @@ function DeliverableRosterPanel({
               epicKeys=${epicKeys}
               statusFilter=${statusFilter}
               epicTeams=${epicTeams}
+              projectId=${projectId}
             />
           `
         : null}
@@ -2905,6 +3324,10 @@ function DeliverableRosterPanel({
               epicKeys=${epicKeys}
               statusFilter=${statusFilter}
               epicTeams=${epicTeams}
+              projectId=${projectId}
+              autoOpen=${editor.autoOpen}
+              onLinked=${() =>
+                labelSync && labelSync.run({ deliverableId: Number(editingDeliverable.id), force: true })}
             />
           `
         : null}
@@ -3079,8 +3502,19 @@ function MilestoneEditorModal({
   epicKeys,
   statusFilter,
   epicTeams,
+  projectId,
+  autoOpen,
+  onLinked,
 }) {
   const creating = mode === "create";
+  const setLabel = ({ label, projectKey, from, to }) =>
+    setForm((current) => ({
+      ...current,
+      jira_label: label,
+      jira_label_project_key: projectKey,
+      jira_label_from: from,
+      jira_label_to: to,
+    }));
 
   return html`
     <${EditorModal}
@@ -3118,6 +3552,16 @@ function MilestoneEditorModal({
                 teams=${teams}
                 epicTeams=${epicTeams}
                 compact=${true}
+                projectId=${projectId}
+                onLinked=${onLinked}
+                autoOpen=${autoOpen}
+                onSetLabel=${setLabel}
+                labelContext=${{
+                  label: form.jira_label,
+                  projectKey: form.jira_label_project_key,
+                  from: form.jira_label_from,
+                  to: form.jira_label_to,
+                }}
               />
             `}
     <//>
@@ -3141,8 +3585,19 @@ function DeliverableEditorModal({
   epicKeys,
   statusFilter,
   epicTeams,
+  projectId,
+  autoOpen,
+  onLinked,
 }) {
   const creating = mode === "create";
+  const setLabel = ({ label, projectKey, from, to }) =>
+    setForm((current) => ({
+      ...current,
+      jira_label: label,
+      jira_label_project_key: projectKey,
+      jira_label_from: from,
+      jira_label_to: to,
+    }));
 
   return html`
     <${EditorModal}
@@ -3164,6 +3619,7 @@ function DeliverableEditorModal({
           statusFilter=${statusFilter}
           deliverableId=${creating ? null : deliverableId}
           onMessage=${onMessage}
+          projectId=${projectId}
         />
         ${creating
           ? null
@@ -3178,6 +3634,16 @@ function DeliverableEditorModal({
                 teams=${teams}
                 epicTeams=${epicTeams}
                 compact=${true}
+                projectId=${projectId}
+                onLinked=${onLinked}
+                autoOpen=${autoOpen}
+                onSetLabel=${setLabel}
+                labelContext=${{
+                  label: form.jira_label,
+                  projectKey: form.jira_label_project_key,
+                  from: form.jira_label_from,
+                  to: form.jira_label_to,
+                }}
               />
             `}
     <//>
@@ -4301,6 +4767,7 @@ function WorkspaceView({
   const [epicKeys, setEpicKeys] = useState([]);
   const [epicTeams, setEpicTeams] = useState({});
   const statusFilter = useJiraStatusFilter(dashboard.project.id);
+  const labelSync = useLabelSync(dashboard.project.id, onNotify);
 
   return html`
     <div className="app-shell">
@@ -4388,6 +4855,8 @@ function WorkspaceView({
           setEpicTeams(teamsByEpic);
         }}
         onTeamsChanged=${onWorkspaceRefresh}
+        onCheckLabels=${() => labelSync.run({ force: true, announce: true })}
+        checkingLabels=${labelSync.checking}
       />
 
       <section className="workspace-panels">
@@ -4404,6 +4873,8 @@ function WorkspaceView({
           csvFile=${csvFile}
           setCsvFile=${setCsvFile}
           onCsvSubmit=${onCsvSubmit}
+          projectId=${dashboard.project.id}
+          labelSync=${labelSync}
         />
       </section>
 

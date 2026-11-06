@@ -129,11 +129,35 @@ whole set of work behind a deliverable. In any deliverable story picker, open th
    `SNA`); change it to search another project.
 3. Click **Find stories**. Results honor the story status filter, so closed stories
    stay hidden unless you re-enable them.
-4. Click **Link N stories** — every visible match is linked in one action; there are
-   no per-row checkboxes. The line beneath reports how many are hidden by the filter,
-   whether the 100-result cap was hit, and whether everything is already linked.
+4. Narrow by **Quarter** (year + Q1–Q4, **Custom range**, or **All**). A story is
+   placed by its parent epic's dates, else its own due date; undated stories stay in
+   the list (flagged) and can be hidden with a toggle. Set `JIRA_EPIC_START_FIELD` to
+   your tenant's epic start-date field, otherwise only the epic's due date is used.
+5. Each row shows a **New**, **Linked here** or **Linked to "<deliverable>"** pill
+   (the last is selectable, with a warning). Tick stories — or **Select all new** —
+   and click **Link selected (N)**. The 500-result cap is reported beneath the list.
+6. **Set as deliverable label** stores the label, Jira project and date range on the
+   deliverable (one label each); save the deliverable to keep it.
 
 From the **Create deliverable** panel the keys are queued and linked when you save.
+
+### New stories under a label
+
+Labelled deliverables are re-checked for stories that are not linked yet — on opening
+a workspace, after a label is saved, when the tab regains focus, when a deliverable is
+opened, and from **Check for new stories** next to **Refresh**. This is surface-only:
+a **N new** badge appears on the deliverable and **nothing is linked** until you open
+it, review the pre-ticked stories and click **Link selected**.
+
+```bash
+curl -sX POST 'http://localhost:8001/api/projects/1/jira/label-sync?force=true'
+# -> {"results": [{"deliverable_id": 17, "label": "payments-v2", "total": 12,
+#                  "new_keys": ["SNA-1"], "new_count": 1, "truncated": false}]}
+```
+
+Checks are throttled by `JIRA_SYNC_TTL_SECONDS` (`force=true` bypasses) and Jira
+trouble comes back as an `error` field rather than a failure. There is no
+server-side scheduler.
 
 Programmatic:
 

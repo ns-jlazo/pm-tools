@@ -2141,3 +2141,29 @@ th {
   height: 18px;
   accent-color: var(--accent);
 }
+
+/* Jira label: "N new" badge, row state pills and the undated toggle. */
+.jira-new-badge {
+  border: 1px solid #0f766e;
+  background: #ccfbf1;
+  color: #115e59;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.jira-new-pill {
+  background: #ccfbf1;
+  color: #115e59;
+}
+
+.jira-linked-elsewhere {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.jira-undated-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}

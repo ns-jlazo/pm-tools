@@ -572,5 +572,91 @@ class ExampleWorkspaceFlagTests(unittest.TestCase):
         self.assertEqual(cards, {"Demo": True, "Customer Work": False})
 
 
+class DeliverableJiraLabelTests(unittest.TestCase):
+    """The label and its date window round-trip through create and update."""
+
+    def setUp(self) -> None:
+        self.engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=self.engine)
+        self.db: Session = sessionmaker(bind=self.engine)()
+        self.project = models.Project(name="Alpha", description="", color="#0f766e")
+        self.db.add(self.project)
+        self.db.flush()
+        self.team = models.Team(project_id=self.project.id, name="Platform", color="#0f766e")
+        self.db.add(self.team)
+        self.db.commit()
+
+    def tearDown(self) -> None:
+        self.db.close()
+        Base.metadata.drop_all(bind=self.engine)
+        self.engine.dispose()
+
+    def _payload(self, **extra) -> schemas.DeliverableCreate:
+        return schemas.DeliverableCreate(
+            title="Login",
+            team_id=self.team.id,
+            planned_start=date(2026, 7, 1),
+            planned_end=date(2026, 7, 10),
+            **extra,
+        )
+
+    def test_label_round_trips_and_is_trimmed(self) -> None:
+        created = services.create_deliverable(
+            self.db,
+            self.project.id,
+            self._payload(
+                jira_label="  feat-login ",
+                jira_label_project_key="PM",
+                jira_label_from=date(2026, 7, 1),
+                jira_label_to=date(2026, 9, 30),
+            ),
+        )
+
+        read = services.serialize_deliverable(created)
+        self.assertEqual(read.jira_label, "feat-login")
+        self.assertEqual(read.jira_label_project_key, "PM")
+        self.assertEqual(read.jira_label_from, date(2026, 7, 1))
+        self.assertEqual(read.jira_label_to, date(2026, 9, 30))
+
+    def test_blank_label_becomes_null_on_update(self) -> None:
+        created = services.create_deliverable(
+            self.db, self.project.id, self._payload(jira_label="feat-login")
+        )
+
+        updated = services.update_deliverable(
+            self.db,
+            self.project.id,
+            created,
+            schemas.DeliverableUpdate(jira_label="   "),
+        )
+
+        self.assertIsNone(updated.jira_label)
+
+    def test_inverted_range_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            services.create_deliverable(
+                self.db,
+                self.project.id,
+                self._payload(
+                    jira_label_from=date(2026, 9, 30), jira_label_to=date(2026, 7, 1)
+                ),
+            )
+
+    def test_update_checks_range_against_stored_bound(self) -> None:
+        created = services.create_deliverable(
+            self.db,
+            self.project.id,
+            self._payload(jira_label_from=date(2026, 7, 1), jira_label_to=date(2026, 9, 30)),
+        )
+
+        with self.assertRaises(ValueError):
+            services.update_deliverable(
+                self.db,
+                self.project.id,
+                created,
+                schemas.DeliverableUpdate(jira_label_to=date(2026, 6, 1)),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, inspect, text
 from app.main import (
     _migrate_deliverable_rename,
     _migrate_example_flag,
+    _migrate_jira_label,
     _migrate_release_date,
 )
 
@@ -317,5 +318,64 @@ class ReleaseDateMigrationTests(unittest.TestCase):
 
     def test_no_ops_when_projects_table_is_absent(self) -> None:
         _migrate_release_date(self.engine)  # must not raise
+
+        self.assertEqual(set(inspect(self.engine).get_table_names()), set())
+
+
+class JiraLabelMigrationTests(unittest.TestCase):
+    """`deliverables.jira_label*` columns are added in place, all nullable."""
+
+    _COLUMNS = {
+        "jira_label",
+        "jira_label_project_key",
+        "jira_label_from",
+        "jira_label_to",
+    }
+
+    def setUp(self) -> None:
+        self.engine = create_engine(
+            "sqlite:///:memory:", connect_args={"check_same_thread": False}
+        )
+        with self.engine.begin() as connection:
+            connection.execute(
+                text("CREATE TABLE deliverables (id INTEGER PRIMARY KEY, title VARCHAR(200))")
+            )
+            connection.execute(text("INSERT INTO deliverables VALUES (1, 'Login')"))
+
+    def tearDown(self) -> None:
+        self.engine.dispose()
+
+    def _columns(self) -> set:
+        return {c["name"] for c in inspect(self.engine).get_columns("deliverables")}
+
+    def test_adds_nullable_columns_and_keeps_rows_null(self) -> None:
+        _migrate_jira_label(self.engine)
+
+        self.assertTrue(self._COLUMNS <= self._columns())
+        with self.engine.begin() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT title, jira_label, jira_label_project_key, "
+                    "jira_label_from, jira_label_to FROM deliverables"
+                )
+            ).one()
+        self.assertEqual(tuple(row), ("Login", None, None, None, None))
+
+    def test_second_run_is_a_no_op(self) -> None:
+        _migrate_jira_label(self.engine)
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE deliverables SET jira_label = 'feat-x'"))
+
+        _migrate_jira_label(self.engine)  # must not raise or reset the value
+
+        with self.engine.begin() as connection:
+            stored = connection.execute(text("SELECT jira_label FROM deliverables")).scalar_one()
+        self.assertEqual(stored, "feat-x")
+
+    def test_no_ops_when_deliverables_table_is_absent(self) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(text("DROP TABLE deliverables"))
+
+        _migrate_jira_label(self.engine)  # must not raise
 
         self.assertEqual(set(inspect(self.engine).get_table_names()), set())

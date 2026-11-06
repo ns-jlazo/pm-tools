@@ -532,6 +532,10 @@ def serialize_deliverable(deliverable: models.Deliverable) -> schemas.Deliverabl
         dependency_slip_days=risk.dependency_slip_days,
         milestone_slip_days=risk.milestone_slip_days,
         risk_reasons=risk.risk_reasons,
+        jira_label=deliverable.jira_label,
+        jira_label_project_key=deliverable.jira_label_project_key,
+        jira_label_from=deliverable.jira_label_from,
+        jira_label_to=deliverable.jira_label_to,
         milestones=[
             serialize_milestone(milestone)
             for milestone in _sorted_milestones(deliverable)
@@ -586,12 +590,18 @@ def replace_contributor_teams(
     deliverable.contributor_teams = teams
 
 
+def _check_label_range(start: Optional[date], end: Optional[date]) -> None:
+    if start is not None and end is not None and start > end:
+        raise ValueError("Jira label range start must be on or before its end.")
+
+
 def create_deliverable(
     db: Session, project_id: int, payload: schemas.DeliverableCreate
 ) -> models.Deliverable:
     team = db.get(models.Team, payload.team_id)
     if team is None or team.project_id != project_id:
         raise ValueError("Team does not belong to the selected project.")
+    _check_label_range(payload.jira_label_from, payload.jira_label_to)
 
     deliverable = models.Deliverable(
         project_id=project_id,
@@ -604,6 +614,10 @@ def create_deliverable(
         current_end=payload.current_end,
         status=payload.status,
         progress=payload.progress,
+        jira_label=payload.jira_label,
+        jira_label_project_key=payload.jira_label_project_key,
+        jira_label_from=payload.jira_label_from,
+        jira_label_to=payload.jira_label_to,
     )
     db.add(deliverable)
     db.flush()
@@ -631,6 +645,11 @@ def update_deliverable(
         team = db.get(models.Team, updates["team_id"])
         if team is None or team.project_id != project_id:
             raise ValueError("Team does not belong to the selected project.")
+
+    _check_label_range(
+        updates.get("jira_label_from", deliverable.jira_label_from),
+        updates.get("jira_label_to", deliverable.jira_label_to),
+    )
 
     for field, value in updates.items():
         setattr(deliverable, field, value)

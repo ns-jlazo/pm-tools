@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
@@ -22,7 +23,8 @@ from app.jira.auth import JiraNotConfigured
 
 
 def _make_issue(key: str, status: str = "To Do", category: str = "new",
-                summary: str = "Ticket", labels: Any = None) -> Dict[str, Any]:
+                summary: str = "Ticket", labels: Any = None, parent: Any = None,
+                duedate: Any = "2026-08-31", extra_fields: Any = None) -> Dict[str, Any]:
     return {
         "key": key,
         "fields": {
@@ -30,9 +32,10 @@ def _make_issue(key: str, status: str = "To Do", category: str = "new",
             "status": {"name": status, "statusCategory": {"key": category}},
             "issuetype": {"name": "Epic"},
             "assignee": {"displayName": "Jamie Fox", "emailAddress": "jamie@example.com"},
-            "duedate": "2026-08-31",
-            "parent": None,
+            "duedate": duedate,
+            "parent": {"key": parent} if parent else None,
             "labels": list(labels or []),
+            **(extra_fields or {}),
         },
     }
 
@@ -61,7 +64,20 @@ class _FakeClient:
     def search_all_issues(self, jql: str, max_results: int = 500,
                           fields: Any = None) -> List[Dict[str, Any]]:
         self.search_calls.append(jql)
-        return list(self.issues.values())[:max_results]
+        return self._matching(jql)[:max_results]
+
+    def _matching(self, jql: str) -> List[Dict[str, Any]]:
+        """Honor the two query shapes the service sends; anything else is everything."""
+        issues = list(self.issues.values())
+        keys = re.search(r"issuekey in \((.*?)\)", jql)
+        if keys:
+            wanted = set(re.findall(r'"([^"]+)"', keys.group(1)))
+            return [i for i in issues if i["key"] in wanted]
+        label = re.search(r'labels = "(.*)" ORDER', jql)
+        if label:
+            wanted_label = label.group(1).replace('\\"', '"')
+            return [i for i in issues if wanted_label in i["fields"]["labels"]]
+        return issues
 
     def search_issues(self, jql: str, max_results: int = 50, fields: Any = None,
                       next_page_token: Any = None) -> Dict[str, Any]:
@@ -453,7 +469,7 @@ class JiraLabelTests(unittest.TestCase):
         self.assertEqual(jira_service.label_project_key(" OPS "), "OPS")
 
     def test_search_by_label_scopes_and_escapes_the_jql(self) -> None:
-        self.fake.add("SNA-1", labels=["pay-v2"])
+        self.fake.add("SNA-1", labels=['pay "v2"'])
 
         response = jira_service.search_by_label('pay "v2"')
 
@@ -725,6 +741,166 @@ class JiraHealthTests(unittest.TestCase):
         self.assertTrue(health.configured)
         self.assertFalse(health.authenticated)
         self.assertIn("JIRA_API_TOKEN", health.detail)
+
+
+class LabelSearchEnrichmentTests(unittest.TestCase):
+    """Epic-based dating, the date window, and `linked_in` on label search."""
+
+    # Borrow the DB + fake-client fixture without inheriting (and re-running)
+    # every JiraServiceTests case.
+    def setUp(self) -> None:
+        JiraServiceTests.setUp(self)
+        self.addCleanup(lambda: JiraServiceTests.tearDown(self))
+        env = mock.patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("JIRA_EPIC_START_FIELD", None)
+        jira_service._label_sync_cache.clear()
+        self.addCleanup(jira_service._label_sync_cache.clear)
+
+    def _epic(self, key: str, start: Any, due: Any) -> None:
+        self.fake.add(
+            key, summary=f"Epic {key}", duedate=due,
+            extra_fields={"customfield_10015": start},
+        )
+
+    def _story(self, key: str, parent: Any = None, duedate: Any = None) -> None:
+        self.fake.add(key, labels=["feat-x"], parent=parent, duedate=duedate)
+
+    def _search(self, **kwargs: Any) -> schemas.JiraLabelSearchResponse:
+        return jira_service.search_by_label(
+            "feat-x", db=self.db, project_id=self.project_id, **kwargs
+        )
+
+    def test_epic_dates_place_the_story_and_filter_the_window(self) -> None:
+        os.environ["JIRA_EPIC_START_FIELD"] = "customfield_10015"
+        self._epic("E-1", "2026-07-01", "2026-09-30")  # Q3
+        self._epic("E-2", "2026-10-01", "2026-12-31")  # Q4
+        self._story("S-1", parent="E-1")
+        self._story("S-2", parent="E-2")
+
+        response = self._search(date_from=date(2026, 7, 1), date_to=date(2026, 9, 30))
+
+        self.assertEqual([i.key for i in response.issues], ["S-1"])
+        hit = response.issues[0]
+        self.assertEqual(hit.epic_key, "E-1")
+        self.assertEqual(hit.epic_summary, "Epic E-1")
+        self.assertEqual(hit.effective_start, date(2026, 7, 1))
+        self.assertEqual(hit.effective_end, date(2026, 9, 30))
+        self.assertEqual(hit.labels, ["feat-x"])
+
+    def test_epic_without_start_field_uses_its_due_date(self) -> None:
+        self._epic("E-1", "2026-07-01", "2026-09-30")
+        self._story("S-1", parent="E-1")
+
+        hit = self._search().issues[0]
+
+        self.assertEqual((hit.effective_start, hit.effective_end),
+                         (date(2026, 9, 30), date(2026, 9, 30)))
+
+    def test_story_due_date_is_the_fallback(self) -> None:
+        self._story("S-1", duedate="2026-11-15")
+
+        in_window = self._search(date_from=date(2026, 10, 1), date_to=date(2026, 12, 31))
+        out_of_window = self._search(date_from=date(2026, 1, 1), date_to=date(2026, 3, 31))
+
+        self.assertEqual([i.key for i in in_window.issues], ["S-1"])
+        self.assertEqual(out_of_window.issues, [])
+
+    def test_undated_stories_are_kept_and_flagged(self) -> None:
+        self._story("S-1", duedate=None)
+
+        response = self._search(date_from=date(2026, 7, 1), date_to=date(2026, 9, 30))
+
+        self.assertEqual([i.key for i in response.issues], ["S-1"])
+        self.assertTrue(response.issues[0].undated)
+
+    def test_inverted_window_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self._search(date_from=date(2026, 9, 1), date_to=date(2026, 7, 1))
+
+    def test_linked_in_names_the_deliverables_that_hold_a_story(self) -> None:
+        self._story("S-1", duedate="2026-08-01")
+        self._story("S-2", duedate="2026-08-01")
+        jira_service.link_issues_to_deliverable(self.db, self.deliverable_id, ["S-1"])
+
+        by_key = {i.key: i for i in self._search().issues}
+
+        self.assertEqual(
+            [(l.deliverable_id, l.title) for l in by_key["S-1"].linked_in],
+            [(self.deliverable_id, "T1")],
+        )
+        self.assertEqual(by_key["S-2"].linked_in, [])
+
+    def _label_the_deliverable(self) -> None:
+        deliverable = self.db.get(models.Deliverable, self.deliverable_id)
+        deliverable.jira_label = "feat-x"
+        self.db.commit()
+
+    def test_label_sync_reports_new_keys_without_linking(self) -> None:
+        self._label_the_deliverable()
+        self._story("S-1", duedate="2026-08-01")
+        self._story("S-2", duedate="2026-08-01")
+        jira_service.link_issues_to_deliverable(self.db, self.deliverable_id, ["S-1"])
+
+        result = jira_service.sync_labels(self.db, self.project_id, force=True)
+
+        (item,) = result.results
+        self.assertEqual((item.label, item.total, item.new_keys, item.new_count),
+                         ("feat-x", 2, ["S-2"], 1))
+        links = jira_service.list_deliverable_links(
+            self.db, self.deliverable_id, refresh_stale=False
+        )
+        self.assertEqual([l.issue.key for l in links], ["S-1"])  # nothing auto-linked
+
+    def test_label_sync_ignores_unlabelled_deliverables(self) -> None:
+        self.assertEqual(jira_service.sync_labels(self.db, self.project_id).results, [])
+
+    def test_label_sync_is_throttled_but_tracks_new_links(self) -> None:
+        self._label_the_deliverable()
+        self._story("S-1", duedate="2026-08-01")
+        jira_service.sync_labels(self.db, self.project_id, force=True)
+        searches = len(self.fake.search_calls)
+
+        jira_service.link_issues_to_deliverable(self.db, self.deliverable_id, ["S-1"])
+        searches_after_link = len(self.fake.search_calls)
+        result = jira_service.sync_labels(self.db, self.project_id)
+
+        self.assertEqual(len(self.fake.search_calls), searches_after_link)  # served from cache
+        self.assertGreater(searches_after_link, searches - 1)
+        (item,) = result.results
+        self.assertTrue(item.cached)
+        self.assertEqual(item.new_count, 0)  # linking cleared the badge
+
+    def test_label_sync_force_and_changed_label_bypass_the_throttle(self) -> None:
+        self._label_the_deliverable()
+        self._story("S-1", duedate="2026-08-01")
+        jira_service.sync_labels(self.db, self.project_id, force=True)
+        before = len(self.fake.search_calls)
+
+        jira_service.sync_labels(self.db, self.project_id, force=True)
+        self.assertGreater(len(self.fake.search_calls), before)
+
+        before = len(self.fake.search_calls)
+        self.db.get(models.Deliverable, self.deliverable_id).jira_label_to = date(2026, 12, 31)
+        self.db.commit()
+        jira_service.sync_labels(self.db, self.project_id)
+        self.assertGreater(len(self.fake.search_calls), before)
+
+    def test_label_sync_fails_softly(self) -> None:
+        self._label_the_deliverable()
+        with mock.patch.object(
+            jira_service, "get_client", side_effect=JiraNotConfigured("no creds")
+        ):
+            result = jira_service.sync_labels(self.db, self.project_id, force=True)
+        self.assertEqual(result.error, "no creds")
+
+        with mock.patch.object(
+            jira_service, "search_by_label", side_effect=requests.ConnectionError("down")
+        ):
+            result = jira_service.sync_labels(self.db, self.project_id, force=True)
+        self.assertIsNone(result.error)
+        self.assertIsNotNone(result.results[0].error)
 
 
 if __name__ == "__main__":
