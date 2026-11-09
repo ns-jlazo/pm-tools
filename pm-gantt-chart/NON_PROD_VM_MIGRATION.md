@@ -226,13 +226,125 @@ ss -ltnp | grep 8765
 curl -f http://127.0.0.1:8765/api/health
 ```
 
-If users access the VM directly, open the port only to the required non-prod networks:
+Expected: `LISTEN 0.0.0.0:8765` owned by the uvicorn `python` process, and HTTP 200 from the health endpoint.
 
-```bash
-sudo ufw allow from <allowed-cidr> to any port 8765 proto tcp
+### 7.1 This VM Is Reachable Only Through Teleport
+
+Passing the checks above does **not** mean users can reach the app. On `pm-tools-01.iad0.netskope.com` (`10.38.12.54`), all access is brokered by Teleport. Verified on the VM:
+
+- No host firewall of any kind: `ufw` is not installed, `iptables -S` has only `ACCEPT` policies with zero rules, the `nft` ruleset is empty, and `firewalld` is inactive.
+- Teleport Enterprise v18.8.0 agent is `active` and `enabled`, joined to `teleport-iad0.netskope.io:443`, with `ssh_service` on `0.0.0.0:3022`.
+
+From a laptop on the VPN, `ping 10.38.12.54`, `nc -z 10.38.12.54 8765`, and `nc -z 10.38.12.54 22` all fail, and `pm-tools-01.iad0.netskope.com` does not resolve on a non-corporate resolver. SSH still works because `~/.ssh/config` tunnels through Teleport:
+
+```
+Host pm-tools-01.iad0
+  HostName pm-tools-01.iad0.netskope.com
+  ProxyCommand /usr/local/bin/tsh proxy ssh --cluster=iad0 --proxy=teleport.netskope.io:443 %r@%h:%p
 ```
 
-If the environment uses a reverse proxy or load balancer, point it to `http://<new-vm>:8765` and configure TLS/authentication there. Keep prod and non-prod hostnames distinct so users can tell which environment they are editing.
+Consequences for this runbook:
+
+- **Do not add a host firewall rule to "open" port 8765.** There is no firewall closing it. An earlier version of this step suggested `sudo ufw allow ... port 8765`; that command is wrong for this VM. `ufw` is not installed, so it would require an install, and enabling `ufw` defaults to denying inbound — which would break Teleport SSH on port 3022 and lock everyone out of the box.
+- `http://10.38.12.54:8765` and `http://pm-tools-01.iad0.netskope.com:8765` will not work from a laptop and cannot be handed to coworkers.
+- The app has no authentication of its own. Anyone who can route to port 8765 can edit non-prod data, so put authentication in front of it as part of exposing it.
+
+### 7.2 Option A: Register As A Teleport Application (recommended for handover)
+
+This is the only option that gives coworkers a plain URL with SSO, requires no VPN routing changes, and reuses the agent already running on the VM.
+
+Prerequisites to confirm with the Teleport/infra owners **before** editing config — `tsh apps ls --cluster=iad0` currently returns zero apps, so this VM would be the first application registered on the `iad0` leaf cluster:
+
+1. Whether the `iad0` proxy has wildcard DNS and a matching TLS cert for app access. In the root `commercial` cluster, 76 of 106 apps use `*.apps.netskope.io`; the leaf's equivalent domain is unconfirmed and determines the correct `public_addr`.
+2. Which Teleport role grants coworkers access. Access is matched via `app_labels`, so an existing role needs to cover the labels below, or a new role needs to be granted to the intended users.
+
+Back up the config first. Teleport is the only access path to this VM, so a bad edit that stops the agent locks you out with no fallback:
+
+```bash
+# Timestamped history, plus a fixed path the auto-revert below can rely on.
+sudo cp /etc/teleport.yaml /etc/teleport.yaml.bak.$(date +%Y%m%d-%H%M%S)
+sudo cp /etc/teleport.yaml /etc/teleport.yaml.known-good
+```
+
+Change the existing `app_service` block in `/etc/teleport.yaml` from `enabled: no` to:
+
+```yaml
+app_service:
+  enabled: yes
+  apps:
+    - name: pm-gantt-chart-nonprod
+      description: "PM Gantt Chart - Non-Prod"
+      uri: http://127.0.0.1:8765
+      # public_addr must match the iad0 proxy's app-access wildcard domain.
+      # Confirm the correct domain before setting this.
+      public_addr: pm-gantt-chart-nonprod.<iad0-app-domain>
+      labels:
+        ns_env: "npe"
+        app: "pm-gantt-chart"
+```
+
+Validate the YAML parses before reloading:
+
+```bash
+sudo python3 -c "import yaml,sys; yaml.safe_load(open('/etc/teleport.yaml')); print('yaml ok')"
+```
+
+Open a second Teleport SSH session as a safety net, then optionally arm a timed auto-revert so a failed agent cannot strand you:
+
+```bash
+# Reverts config and reloads in 5 minutes unless cancelled.
+sudo systemd-run --on-active=300 --unit=teleport-autorevert --collect \
+  /bin/sh -c 'cp /etc/teleport.yaml.known-good /etc/teleport.yaml && systemctl reload teleport'
+```
+
+Reload the agent. The unit defines `ExecReload` as `SIGHUP`, which is a graceful reload and does not drop in-flight SSH sessions:
+
+```bash
+sudo systemctl reload teleport
+systemctl is-active teleport
+journalctl -u teleport -n 50 --no-pager
+```
+
+Cancel the auto-revert once the agent is healthy and the app is registered:
+
+```bash
+sudo systemctl stop teleport-autorevert.timer 2>/dev/null; sudo systemctl reset-failed teleport-autorevert.timer 2>/dev/null
+```
+
+Verify from a laptop:
+
+```bash
+tsh login --proxy=teleport.netskope.io:443
+tsh apps ls --cluster=iad0
+```
+
+The app should appear with its public address. Coworkers then reach it in a browser at that address after `tsh login`, authenticated by SSO with no port forwarding.
+
+Optional hardening once Teleport fronts the app: because `uri` points at `http://127.0.0.1:8765`, the app no longer needs to listen on all interfaces. Change `--host 0.0.0.0` to `--host 127.0.0.1` in the systemd unit from step 6 and restart the service. Skip this if you also want Option B to work.
+
+### 7.3 Option B: Request Direct Network Access
+
+Only if a routable URL is required instead of Teleport app access. This needs a netops change, not a change on the VM:
+
+- Route and permit the VPN client pool (a laptop on the VPN gets an address in `10.60.150.0/23` on `utun0`) to `10.38.12.54:8765`.
+- Add a DNS record resolvable by clients, or have users hit the IP.
+
+Note that there is still no host firewall to open, and the app still has no authentication, so pair this with Option C.
+
+### 7.4 Option C: Reverse Proxy Or Load Balancer
+
+Point a proxy or LB at `http://<new-vm>:8765` and terminate TLS and authentication there. This complements Option B rather than replacing it, since the proxy itself must be able to route to the VM. Keep prod and non-prod hostnames distinct so users can tell which environment they are editing.
+
+### 7.5 Interim Single-User Access
+
+Adequate for your own validation in step 8, but it does not scale to coworkers — each person needs their own tunnel and Teleport access to the VM:
+
+```bash
+ssh -L 8765:localhost:8765 pm-tools-01.iad0
+# then browse http://localhost:8765
+```
+
+If a host firewall is ever added to this VM, allow Teleport SSH on `3022` and OpenSSH on `22` in the same change, or you will lose access to the box.
 
 ## 8. Post-Migration Validation
 
@@ -245,7 +357,7 @@ curl -f http://127.0.0.1:8765/api/health
 curl -f http://127.0.0.1:8765/api/projects
 ```
 
-Then validate in the browser:
+Then validate in the browser. Reach the app using whichever access path you configured in step 7; a direct `http://10.38.12.54:8765` URL will not work from a laptop.
 
 - The app loads at the non-prod URL.
 - Existing projects are present.
@@ -269,7 +381,8 @@ Common fixes:
 - Wrong or empty data: stop the service, restore the backed-up `pm_tool.db` again, verify `WorkingDirectory`, then start the service.
 - Service starts but data is missing: search for accidental databases with `find /home/jlazo -name pm_tool.db -ls`; the service may have started from the wrong directory.
 - Jira returns configuration errors: verify `.env` exists in the app directory and restart the service after changes.
-- Port conflict: either stop the conflicting process or change the `--port` in the systemd service and update any firewall/proxy rules.
+- Port conflict: either stop the conflicting process or change the `--port` in the systemd service, then update the Teleport app `uri` (step 7.2) or any proxy rules to match.
+- App unreachable from a browser but `curl http://127.0.0.1:8765/api/health` returns 200 on the VM: this is an access-path problem, not an app problem. See step 7.1 before changing anything on the VM.
 
 ## 10. Final Cutover Checklist
 
@@ -283,4 +396,5 @@ Common fixes:
 - Lingering enabled if the service must survive logout/reboot.
 - Health endpoint, index page, and projects API return successfully.
 - Browser validation confirms existing data is present.
-- Firewall, reverse proxy, DNS, and access controls are configured for non-prod.
+- Access path configured for non-prod per step 7, and confirmed working from another person's laptop, not just via your own port forward.
+- Authentication is in front of the app before handing the URL to coworkers.

@@ -451,16 +451,17 @@ function chipClause(kind, field, quote, activeIds) {
 
 // Chips scope the search, so they AND with whatever the user typed. A typed
 // JQL's trailing ORDER BY has to stay last, hence the split.
-function buildJiraQuery(activeIds, rawJql, rawKeyword) {
+function buildJiraQuery(activeIds, rawJql, rawKeyword, lockedType) {
   const jql = (rawJql || "").trim();
   const keyword = (rawKeyword || "").trim();
   // A pasted key is a direct lookup; scoping it to a project would hide it.
   if (!jql && keyword && ISSUE_KEY_PATTERN.test(keyword)) {
-    return `issuekey = "${keyword.toUpperCase()}"`;
+    return `issuekey = "${keyword.toUpperCase()}"${lockedType ? ` AND issuetype = ${lockedType}` : ""}`;
   }
+  // A locked type overrides whatever type chips are stored or selected.
   const scope = [
     chipClause("project", "project", true, activeIds),
-    chipClause("type", "issuetype", false, activeIds),
+    lockedType ? `issuetype = ${lockedType}` : chipClause("type", "issuetype", false, activeIds),
   ].filter(Boolean);
   let order = "ORDER BY updated DESC";
   let base = "";
@@ -497,6 +498,33 @@ function JiraPager({ index, from, count, total, hasNext, busy, onPrev, onNext })
   `;
 }
 
+// An epic's heading with its stories underneath; click the heading to fold the
+// stories away. Open by default so nothing is hidden until the user asks.
+function EpicGroup({ className, headingClassName, heading, children }) {
+  const [open, setOpen] = useState(true);
+  return html`
+    <div className=${`${className} ${open ? "" : "epic-collapsed"}`}>
+      <div className=${headingClassName}>
+        <button
+          type="button"
+          className="epic-toggle"
+          aria-expanded=${open}
+          onClick=${() => setOpen((value) => !value)}
+          title=${open ? "Collapse stories" : "Expand stories"}
+        >
+          <span className="epic-chevron" aria-hidden="true">${open ? "▾" : "▸"}</span>
+          ${heading}
+        </button>
+      </div>
+      ${open ? children : null}
+    </div>
+  `;
+}
+
+function isEpicIssue(issue) {
+  return ((issue && issue.issue_type) || "").toLowerCase() === "epic";
+}
+
 function JiraResultRow({ issue, linked, selected, onToggle, onLink, submitting }) {
   return html`
     <div className=${`jira-result-row ${selected ? "selected" : ""}`}>
@@ -515,6 +543,9 @@ function JiraResultRow({ issue, linked, selected, onToggle, onLink, submitting }
         <span className=${jiraStatusClass(issue.status_category)}>${issue.status}</span>
         <span className="jira-result-type">${issue.issue_type}</span>
         ${linked ? html`<span className="tiny-pill">Linked</span>` : null}
+        ${onToggle && isEpicIssue(issue)
+          ? html`<span className="tiny-pill" title="Linking an epic links every story under it">Epic — links all its stories</span>`
+          : null}
       </div>
       <div className="jira-result-summary">${issue.summary}</div>
       ${onLink
@@ -599,6 +630,8 @@ function JiraPickerModal({
   initialMode,
   preselectKeys,
   onSetLabel,
+  initialChips,
+  lockedType,
 }) {
   const hasEpics = Boolean(epicKeys && epicKeys.length);
   const canBulkLink = typeof onLinkMany === "function";
@@ -630,7 +663,9 @@ function JiraPickerModal({
   const [labelSearching, setLabelSearching] = useState(false);
   const [labelHint, setLabelHint] = useState("");
   const alreadyLinked = new Set(linkedKeys || []);
-  const [chips, setChips] = useState(() => readStored(JIRA_CHIPS_KEY, JIRA_DEFAULT_CHIPS));
+  const [chips, setChips] = useState(() => initialChips || readStored(JIRA_CHIPS_KEY, JIRA_DEFAULT_CHIPS));
+  // When the picker is locked to one issue type, type chips are not offered.
+  const visibleChips = lockedType ? JIRA_CHIPS.filter((chip) => chip.kind !== "type") : JIRA_CHIPS;
   // Search paging is token based (Jira's /search/jql has no offset): tokens[i]
   // fetches page i, so Previous is just a lower index.
   const [pageTokens, setPageTokens] = useState([null]);
@@ -849,7 +884,7 @@ function JiraPickerModal({
 
   // A new query starts over: back to page 1 and nothing selected.
   const startSearch = (activeChips) => {
-    const query = buildJiraQuery(activeChips, jql, keyword);
+    const query = buildJiraQuery(activeChips, jql, keyword, lockedType);
     if (!query) {
       setError("Enter a JQL query or a keyword, or select a project/type chip.");
       return;
@@ -868,7 +903,8 @@ function JiraPickerModal({
 
   const toggleChip = (id) => {
     const next = chips.includes(id) ? chips.filter((chip) => chip !== id) : [...chips, id];
-    writeStored(JIRA_CHIPS_KEY, next);
+    // A locked picker's chip choices are not the user's saved story-search defaults.
+    if (!lockedType) writeStored(JIRA_CHIPS_KEY, next);
     setChips(next);
     if (searched) startSearch(next);
   };
@@ -910,6 +946,11 @@ function JiraPickerModal({
     setSearching(true);
     try {
       const issue = await api(`/api/jira/issues/${encodeURIComponent(key)}`);
+      if (lockedType && (issue.issue_type || "").toLowerCase() !== lockedType.toLowerCase()) {
+        setError(`${issue.key} is a ${issue.issue_type || "different issue type"}, not an ${lockedType}. Only ${lockedType}s can be linked here.`);
+        setPickedIssue(null);
+        return;
+      }
       setPickedIssue(issue);
     } catch (err) {
       setError(await describeJiraFailure(err));
@@ -920,6 +961,12 @@ function JiraPickerModal({
   };
 
   const confirmLink = (issue) => {
+    // Work items hold stories only: an epic is expanded to its stories server-side,
+    // which only the bulk endpoint does.
+    if (canBulkLink && isEpicIssue(issue)) {
+      onLinkMany([issue.key], null);
+      return;
+    }
     const payload = { jira_key: issue.key };
     if (teams && selectedTeamId) {
       payload.team_id = Number(selectedTeamId);
@@ -944,17 +991,6 @@ function JiraPickerModal({
                 </button>
               `
             : null}
-          ${canBulkLink
-            ? html`
-                <button
-                  type="button"
-                  className=${`jira-tab ${mode === "label" ? "active" : ""}`}
-                  onClick=${() => setMode("label")}
-                >
-                  By label
-                </button>
-              `
-            : null}
           <button
             type="button"
             className=${`jira-tab ${mode === "search" ? "active" : ""}`}
@@ -969,6 +1005,17 @@ function JiraPickerModal({
           >
             Search by Jira Ticket ID
           </button>
+          ${canBulkLink
+            ? html`
+                <button
+                  type="button"
+                  className=${`jira-tab ${mode === "label" ? "active" : ""}`}
+                  onClick=${() => setMode("label")}
+                >
+                  Search by Jira label
+                </button>
+              `
+            : null}
         </div>
 
         ${teams && teams.length
@@ -1018,14 +1065,18 @@ function JiraPickerModal({
                         const hidden = group.issues.length - visibleCount;
                         if (!pageRows.length && !group.error && visibleCount) return null;
                         return html`
-                          <div className="jira-epic-picker-group" key=${group.epicKey}>
-                            <div className="jira-epic-picker-heading">
+                          <${EpicGroup}
+                            key=${group.epicKey}
+                            className="jira-epic-picker-group"
+                            headingClassName="jira-epic-picker-heading"
+                            heading=${html`
                               <strong>${group.epicKey}</strong>
                               <span className="tiny-pill">${visibleCount}</span>
                               ${hidden
                                 ? html`<span className="help-text">${hidden} hidden by filter</span>`
                                 : null}
-                            </div>
+                            `}
+                          >
                             ${group.error
                               ? html`<div className="jira-modal-error">${group.error}</div>`
                               : pageRows.length
@@ -1047,7 +1098,7 @@ function JiraPickerModal({
                                       ? "Every story here is hidden by the status filter."
                                       : "No child stories in Jira."}
                                   </div>`}
-                          </div>
+                          <//>
                         `;
                       })}
                       <${JiraPager}
@@ -1260,7 +1311,16 @@ function JiraPickerModal({
                 <div className="field-wide">
                   <label>Quick filters</label>
                   <div className="jira-chip-picker">
-                    ${JIRA_CHIPS.map((chip) => {
+                    ${lockedType
+                      ? html`<button
+                          type="button"
+                          className="jira-query-chip selected"
+                          aria-pressed=${true}
+                          disabled
+                          title=${`Only ${lockedType}s can be linked here`}
+                        >✓ issueType = ${lockedType}</button>`
+                      : null}
+                    ${visibleChips.map((chip) => {
                       const on = chips.includes(chip.id);
                       return html`
                         <button
@@ -1275,8 +1335,8 @@ function JiraPickerModal({
                   </div>
                   <span className="help-text">
                     Selected filters are ANDed with the keyword or JQL below.
-                    ${buildJiraQuery(chips, jql, keyword)
-                      ? html`Running: <code>${buildJiraQuery(chips, jql, keyword)}</code>`
+                    ${buildJiraQuery(chips, jql, keyword, lockedType)
+                      ? html`Running: <code>${buildJiraQuery(chips, jql, keyword, lockedType)}</code>`
                       : null}
                   </span>
                 </div>
@@ -1558,6 +1618,8 @@ function JiraProjectPanel({
     } finally {
       setLoading(false);
     }
+    // Also re-check every deliverable's linked label so new stories surface.
+    if (typeof onCheckLabels === "function") await onCheckLabels();
   };
 
   const linkEpic = async (payload) => {
@@ -1694,18 +1756,15 @@ function JiraProjectPanel({
             aria-expanded=${addOpen}
             onClick=${() => setAddOpen(!addOpen)}
           >${addOpen ? "Cancel" : "+ Add team"}</button>
-          <button className="button-secondary" type="button" onClick=${forceSync} disabled=${loading}>
-            ${loading ? "Refreshing…" : "Refresh"}
+          <button
+            className="button-secondary"
+            type="button"
+            onClick=${forceSync}
+            disabled=${loading || checkingLabels}
+            title="Re-sync linked epics and look for new stories under each deliverable's label. Nothing is linked automatically."
+          >
+            ${loading || checkingLabels ? "Refreshing…" : "Refresh data"}
           </button>
-          ${onCheckLabels
-            ? html`<button
-                className="button-secondary"
-                type="button"
-                onClick=${onCheckLabels}
-                disabled=${checkingLabels}
-                title="Look for new Jira stories under each deliverable's label. Nothing is linked automatically."
-              >${checkingLabels ? "Checking…" : "Check for new stories"}</button>`
-            : null}
           <button className="button-primary" type="button" onClick=${() => { setPickerError(""); setShowPicker(true); }}>
             Link epic
           </button>
@@ -1746,8 +1805,6 @@ function JiraProjectPanel({
       ${trouble ? html`<div className="jira-modal-error">${trouble}</div>` : null}
 
       ${data && data.stale ? html`<div className="help-text">Showing cached data — refresh failed.</div>` : null}
-
-      ${statusFilter ? html`<${JiraStatusFilter} filter=${statusFilter} />` : null}
 
       ${groups.map(
         (group) => html`
@@ -1828,7 +1885,7 @@ function JiraProjectPanel({
                           : null}
                       </div>
                       <div className="jira-link-summary">${link.issue.summary}</div>
-                      <${JiraEpicChildren} epicKey=${link.issue.key} statusFilter=${statusFilter} />
+                      <${JiraEpicChildren} epicKey=${link.issue.key} />
                       <div className="actions">
                         <button className="button-secondary" type="button" onClick=${() => unlink(link)}>
                           Unlink
@@ -1846,6 +1903,8 @@ function JiraProjectPanel({
         ? html`
             <${JiraPickerModal}
               title="Link Jira epic to project"
+              initialChips=${["project:SNA"]}
+              lockedType="Epic"
               teams=${teams}
               onClose=${() => setShowPicker(false)}
               onLink=${linkEpic}
@@ -1883,6 +1942,31 @@ function groupStoriesByTeam(links, teams, epicTeams) {
     .filter((team) => buckets.has(team.id))
     .map((team) => buckets.get(team.id));
   if (unassigned.length) groups.push({ team: null, links: unassigned });
+  return groups;
+}
+
+// Bucket linked stories by parent epic, in first-seen order, stories with no
+// epic last. Epics themselves never count as linked work (older links may hold
+// some), so they are dropped here.
+function groupStoriesByEpic(links) {
+  const buckets = new Map();
+  const noEpic = [];
+  for (const link of links || []) {
+    if (isEpicIssue(link.issue)) continue;
+    const epicKey = link.issue.parent_key;
+    if (!epicKey) {
+      noEpic.push(link);
+      continue;
+    }
+    if (!buckets.has(epicKey)) {
+      buckets.set(epicKey, { epicKey, summary: link.issue.parent_summary || "", links: [] });
+    }
+    const bucket = buckets.get(epicKey);
+    if (!bucket.summary && link.issue.parent_summary) bucket.summary = link.issue.parent_summary;
+    bucket.links.push(link);
+  }
+  const groups = Array.from(buckets.values());
+  if (noEpic.length) groups.push({ epicKey: null, summary: "", links: noEpic });
   return groups;
 }
 
@@ -1939,6 +2023,11 @@ function JiraWorkItemLinks({
   }, [scope, itemId]);
 
   const notifyLinked = () => {
+    // Deliverable progress is derived from its linked stories on the server, so
+    // tell the progress readout and the roster/chart to re-read it.
+    if (scope === "deliverables") {
+      window.dispatchEvent(new CustomEvent("work-item-links-changed", { detail: { itemId } }));
+    }
     if (typeof onLinked === "function") onLinked();
   };
 
@@ -1974,13 +2063,27 @@ function JiraWorkItemLinks({
       });
       setShowPicker(false);
       const parts = [`Linked ${result.linked.length} story(s) to ${noun}.`];
+      for (const [epic, stories] of Object.entries(result.expanded || {})) {
+        parts.push(`${epic}: ${stories.length} stor${stories.length === 1 ? "y" : "ies"} from the epic.`);
+      }
+      if ((result.empty_epics || []).length) {
+        parts.push(`No stories under ${result.empty_epics.join(", ")}.`);
+      }
       if (result.skipped.length) parts.push(`${result.skipped.length} already linked.`);
       if (result.not_found.length) parts.push(`Not found: ${result.not_found.join(", ")}.`);
-      if (progress !== null && progress !== undefined && typeof onProgressSuggested === "function") {
+      if (
+        scope !== "deliverables" &&
+        progress !== null &&
+        progress !== undefined &&
+        typeof onProgressSuggested === "function"
+      ) {
         onProgressSuggested(progress);
         parts.push(`Progress prefilled at ${progress}% — save to apply.`);
       }
-      onMessage(parts.join(" "), result.not_found.length ? "error" : "success");
+      onMessage(
+        parts.join(" "),
+        result.not_found.length || (result.empty_epics || []).length ? "error" : "success"
+      );
       await load();
       notifyLinked();
     } catch (err) {
@@ -2006,25 +2109,38 @@ function JiraWorkItemLinks({
 
   const groups = groupStoriesByTeam(links, teams, epicTeams);
   const flat = isFlatGrouping(groups);
-  const chipRow = (group) => html`
-    <div className="jira-chip-row">
-      ${group.links.map(
-        (link) => html`
-          <div className="jira-chip" key=${link.id}>
-            <a href=${link.issue.url} target="_blank" rel="noreferrer">${link.issue.key}</a>
-            <span className=${jiraStatusClass(link.issue.status_category)}>${link.issue.status}</span>
-            <span className="jira-chip-summary">${link.issue.summary}</span>
-            <button
-              type="button"
-              className="jira-chip-remove"
-              onClick=${() => unlink(link)}
-              aria-label=${`Unlink ${link.issue.key}`}
-            >×</button>
-          </div>
-        `
-      )}
+  const storyChip = (link) => html`
+    <div className="jira-chip" key=${link.id}>
+      <a href=${link.issue.url} target="_blank" rel="noreferrer">${link.issue.key}</a>
+      <span className=${jiraStatusClass(link.issue.status_category)}>${link.issue.status}</span>
+      <span className="jira-chip-summary">${link.issue.summary}</span>
+      <button
+        type="button"
+        className="jira-chip-remove"
+        onClick=${() => unlink(link)}
+        aria-label=${`Unlink ${link.issue.key}`}
+      >×</button>
     </div>
   `;
+  // Stories are shown under the epic they belong to.
+  const chipRow = (group) =>
+    groupStoriesByEpic(group.links).map(
+      (epicGroup) => html`
+        <${EpicGroup}
+          key=${epicGroup.epicKey || "no-epic"}
+          className="jira-epic-subgroup"
+          headingClassName="jira-epic-subheading"
+          heading=${html`
+            ${epicGroup.epicKey
+              ? html`<strong>${epicGroup.epicKey}</strong>${epicGroup.summary ? html`<span>· ${epicGroup.summary}</span>` : null}`
+              : html`<strong>No epic</strong>`}
+            <span className="tiny-pill">${epicGroup.links.length}</span>
+          `}
+        >
+          <div className="jira-chip-row">${epicGroup.links.map(storyChip)}</div>
+        <//>
+      `
+    );
 
   return html`
     <div className=${`jira-task-links ${compact ? "compact" : ""}`}>
@@ -2119,7 +2235,6 @@ function deliverablePayload(form, { includeJiraKeys = false } = {}) {
     current_start: form.current_start || null,
     current_end: form.current_end || null,
     status: form.status,
-    progress: Number(form.progress),
     dependency_ids: (form.dependency_ids || []).map(Number),
     contributor_team_ids: (form.contributor_team_ids || []).map(Number),
     // Empty strings are "no label yet"; the API reads null as an explicit clear.
@@ -2349,7 +2464,7 @@ function groupProjects(projects) {
   };
 }
 
-const DASHBOARD_PROJECTS_PER_GROUP = 3;
+const DASHBOARD_PROJECTS_PER_GROUP = 4;
 
 // The few projects whose next release is coming up soonest (today or later).
 // Projects with no upcoming release date are left out of the dashboard lists.
@@ -2615,6 +2730,48 @@ function ConvertExampleDrawer({ project, onClose, onNotify, onDone }) {
   `;
 }
 
+// Read-only progress for a deliverable. The server derives it from the share of
+// linked stories that are done (epics never count), so this only displays it.
+function DeliverableProgress({ deliverableId, fallback = 0, htmlId }) {
+  const [stats, setStats] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const links = await api(`/api/deliverables/${deliverableId}/jira`);
+        if (cancelled) return;
+        const stories = links.filter((link) => !isEpicIssue(link.issue));
+        const done = stories.filter(
+          (link) => ((link.issue.status_category || "").toLowerCase() === "done")
+        ).length;
+        setStats({ total: stories.length, done });
+      } catch (err) {
+        if (!cancelled) setStats(null);
+      }
+    };
+    load();
+    const onChange = (event) => {
+      if (!event.detail || String(event.detail.itemId) === String(deliverableId)) load();
+    };
+    window.addEventListener("work-item-links-changed", onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("work-item-links-changed", onChange);
+    };
+  }, [deliverableId]);
+  const percent = stats
+    ? stats.total ? Math.round((stats.done / stats.total) * 100) : 0
+    : Number(fallback) || 0;
+  return html`
+    <span id=${htmlId} className="progress-readonly">
+      <strong>${percent}%</strong>
+      <span className="muted-text">
+        ${stats ? ` · ${stats.done} of ${stats.total} stories done` : ""} · calculated from linked stories
+      </span>
+    </span>
+  `;
+}
+
 // Re-derives Progress % from the work item's linked stories on demand — the
 // "By label" prefill only fires at link time, so this is the way to pick up Jira
 // movement afterwards. It fills the still-editable field; saving is up to the user.
@@ -2797,9 +2954,7 @@ function DeliverableForm({
       const key = (raw || "").trim().toUpperCase();
       if (key && !next.includes(key)) next.push(key);
     }
-    const seeded =
-      progress === null || progress === undefined ? {} : { progress };
-    setForm({ ...form, jira_keys: next, ...seeded });
+    setForm({ ...form, jira_keys: next });
     setShowPicker(false);
   };
   const removePendingJira = (key) => {
@@ -2865,17 +3020,16 @@ function DeliverableForm({
           <input id=${fieldId("current-end")} type="date" value=${form.current_end} onInput=${handleField("current_end")} />
         </div>
 
-        <div className="field">
-          <label htmlFor=${fieldId("progress")}>Progress %</label>
-          <input id=${fieldId("progress")} type="number" min="0" max="100" value=${form.progress} onInput=${handleField("progress")} />
-          ${deliverableId
-            ? html`<${RecalcProgressButton}
-                itemId=${deliverableId}
-                onProgress=${(value) => setForm((current) => ({ ...current, progress: value }))}
-                onMessage=${onMessage}
-              />`
-            : null}
-        </div>
+        ${deliverableId
+          ? html`<div className="field">
+              <label htmlFor=${fieldId("progress")}>Progress</label>
+              <${DeliverableProgress}
+                htmlId=${fieldId("progress")}
+                deliverableId=${deliverableId}
+                fallback=${form.progress}
+              />
+            </div>`
+          : null}
 
         <div className="field-wide">
           <label>Contributing teams</label>
@@ -3255,6 +3409,17 @@ function CsvImportForm({ csvFile, setCsvFile, onSubmit, submitting }) {
 // form opens as a modal, so its height no longer grows with the form count. A
 // milestone is created from its parent's row, which is where "a milestone cannot
 // exist without a deliverable" now shows up in the UI.
+// Unsaved-changes guard shared by the editor drawer, beforeunload and hash
+// navigation. The roster sets `dirty` and `discard` while an editor has edits.
+const UNSAVED_MESSAGE = "You have unsaved changes. Discard them?";
+const unsavedGuard = { dirty: false, discard: null };
+
+function draftSnapshot(form) {
+  // Progress is derived server-side, so it never counts as a user edit.
+  const { progress, ...rest } = form || {};
+  return JSON.stringify(rest);
+}
+
 function DeliverableRosterPanel({
   deliverables,
   teams,
@@ -3284,11 +3449,43 @@ function DeliverableRosterPanel({
 
   const findDeliverable = (id) => deliverables.find((item) => String(item.id) === String(id));
   const closeEditor = () => setEditor(null);
+  // Snapshot of the draft when a deliverable editor opened; any difference is
+  // an unsaved edit.
+  const baselineRef = useRef("");
+  const isDeliverableEditor =
+    editor && (editor.kind === "deliverable-create" || editor.kind === "deliverable-edit");
+  const deliverableDirty =
+    Boolean(isDeliverableEditor) && draftSnapshot(deliverableDraft) !== baselineRef.current;
+  // Close from the x, backdrop, Esc or Cancel: nothing is saved, and edits need
+  // an explicit OK to throw away.
+  const requestCloseEditor = () => {
+    if (deliverableDirty && !window.confirm(UNSAVED_MESSAGE)) return;
+    closeEditor();
+  };
+  useEffect(() => {
+    unsavedGuard.dirty = deliverableDirty;
+    unsavedGuard.discard = deliverableDirty ? () => setEditor(null) : null;
+    if (!deliverableDirty) return undefined;
+    const onBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      unsavedGuard.dirty = false;
+      unsavedGuard.discard = null;
+    };
+  }, [deliverableDirty]);
   const toggle = (deliverableId) =>
     setExpanded((current) => ({ ...current, [deliverableId]: !current[deliverableId] }));
 
   const openDeliverableCreate = () => {
     setDeliverableDraft({
+      ...DEFAULT_DELIVERABLE,
+      team_id: teams[0] ? String(teams[0].id) : "",
+    });
+    baselineRef.current = draftSnapshot({
       ...DEFAULT_DELIVERABLE,
       team_id: teams[0] ? String(teams[0].id) : "",
     });
@@ -3300,6 +3497,7 @@ function DeliverableRosterPanel({
   // clicks "Link selected".
   const openDeliverableEdit = (deliverable, newKeys) => {
     setDeliverableDraft(deliverableToForm(deliverable));
+    baselineRef.current = draftSnapshot(deliverableToForm(deliverable));
     setEditor({
       kind: "deliverable-edit",
       id: deliverable.id,
@@ -3562,7 +3760,7 @@ function DeliverableRosterPanel({
               form=${deliverableDraft}
               setForm=${setDeliverableDraft}
               onSave=${submitDeliverableCreate}
-              onCancel=${closeEditor}
+              onCancel=${requestCloseEditor}
               submitting=${submitting}
               onMessage=${onMessage}
               epicKeys=${epicKeys}
@@ -3586,7 +3784,7 @@ function DeliverableRosterPanel({
               form=${deliverableDraft}
               setForm=${setDeliverableDraft}
               onSave=${submitDeliverableEdit}
-              onCancel=${closeEditor}
+              onCancel=${requestCloseEditor}
               submitting=${submitting}
               onMessage=${onMessage}
               epicKeys=${epicKeys}
@@ -3677,15 +3875,10 @@ function InlineEditPopover({
               ${STATUS_OPTIONS.map((status) => html`<option key=${status} value=${status}>${humanizeStatus(status)}</option>`) }
             </select>
           </label>
-          <label>
+          <div>
             Progress
-            <input type="number" min="0" max="100" value=${form.progress} onInput=${handleField("progress")} />
-          </label>
-          <${RecalcProgressButton}
-            itemId=${deliverable.id}
-            onProgress=${(value) => setForm((current) => ({ ...current, progress: value }))}
-            onMessage=${onMessage}
-          />
+            <${DeliverableProgress} deliverableId=${deliverable.id} fallback=${deliverable.progress} />
+          </div>
           <label>
             Current start
             <input type="date" value=${form.current_start || ""} onInput=${handleField("current_start")} />
@@ -3710,8 +3903,6 @@ function InlineEditPopover({
           onMessage=${onMessage}
           epicKeys=${epicKeys}
           statusFilter=${statusFilter}
-          onProgressSuggested=${(value) =>
-            setForm((current) => ({ ...current, progress: value }))}
           teams=${teams}
           epicTeams=${epicTeams}
           compact=${true}
@@ -3866,8 +4057,6 @@ function DeliverableEditorModal({
                 onMessage=${onMessage}
                 epicKeys=${epicKeys}
                 statusFilter=${statusFilter}
-                onProgressSuggested=${(value) =>
-                  setForm((current) => ({ ...current, progress: value }))}
                 teams=${teams}
                 epicTeams=${epicTeams}
                 compact=${true}
@@ -4314,7 +4503,6 @@ function GanttChart({
     }
     onInlineSave(Number(editingDeliverableId), {
       status: inlineForm.status,
-      progress: Number(inlineForm.progress),
       current_start: inlineForm.current_start || null,
       current_end: inlineForm.current_end || null,
     });
@@ -4507,7 +4695,14 @@ function GanttChart({
               form=${inlineForm}
               setForm=${setInlineForm}
               onSave=${saveInline}
-              onCancel=${() => setEditingDeliverableId("")}
+              onCancel=${() => {
+                const changed =
+                  inlineForm.status !== editingDeliverable.status ||
+                  (inlineForm.current_start || "") !== (editingDeliverable.current_start || "") ||
+                  (inlineForm.current_end || "") !== (editingDeliverable.current_end || "");
+                if (changed && !window.confirm(UNSAVED_MESSAGE)) return;
+                setEditingDeliverableId("");
+              }}
               submitting=${submitting}
               onMessage=${onMessage}
               epicKeys=${epicKeys}
@@ -5720,6 +5915,16 @@ function App() {
     ]);
   };
 
+  // Deliverable progress is computed server-side from linked stories, so reload
+  // the project whenever links change.
+  const refreshProjectRef = useRef(refreshProject);
+  refreshProjectRef.current = refreshProject;
+  useEffect(() => {
+    const onLinksChanged = () => refreshProjectRef.current();
+    window.addEventListener("work-item-links-changed", onLinksChanged);
+    return () => window.removeEventListener("work-item-links-changed", onLinksChanged);
+  }, []);
+
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -5766,7 +5971,24 @@ function App() {
   };
 
   useEffect(() => {
-    const onHashChange = () => applyRoute(parseRoute());
+    let lastHash = window.location.hash;
+    const onHashChange = () => {
+      const nextHash = window.location.hash;
+      if (nextHash === lastHash) return;
+      if (unsavedGuard.dirty) {
+        if (!window.confirm(UNSAVED_MESSAGE)) {
+          // A hash change can't be cancelled; put the old URL back without
+          // firing another event, and keep the editor and its edits.
+          window.history.replaceState(null, "", window.location.pathname + window.location.search + lastHash);
+          return;
+        }
+        const discard = unsavedGuard.discard;
+        unsavedGuard.dirty = false;
+        if (discard) discard();
+      }
+      lastHash = nextHash;
+      applyRoute(parseRoute());
+    };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);

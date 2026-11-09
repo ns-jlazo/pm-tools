@@ -348,6 +348,8 @@ class JiraIssueLinkRef(BaseModel):
 
 class JiraIssueRead(JiraSearchResult):
     id: int
+    # Summary of `parent_key`'s issue (the epic), when it is cached locally.
+    parent_summary: str = ""
     synced_at: datetime
     links: List[JiraIssueLinkRef] = Field(default_factory=list)
 
@@ -369,6 +371,9 @@ class JiraBulkLinkResult(BaseModel):
     linked: List[str] = Field(default_factory=list)
     skipped: List[str] = Field(default_factory=list)
     not_found: List[str] = Field(default_factory=list)
+    # epic key -> the story keys it stood for. Epics are never linked themselves.
+    expanded: Dict[str, List[str]] = Field(default_factory=dict)
+    empty_epics: List[str] = Field(default_factory=list)
 
 
 class JiraLabelSuggestions(BaseModel):

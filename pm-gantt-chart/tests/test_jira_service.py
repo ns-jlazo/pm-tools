@@ -24,13 +24,14 @@ from app.jira.auth import JiraNotConfigured
 
 def _make_issue(key: str, status: str = "To Do", category: str = "new",
                 summary: str = "Ticket", labels: Any = None, parent: Any = None,
-                duedate: Any = "2026-08-31", extra_fields: Any = None) -> Dict[str, Any]:
+                duedate: Any = "2026-08-31", extra_fields: Any = None,
+                issue_type: str = "Story") -> Dict[str, Any]:
     return {
         "key": key,
         "fields": {
             "summary": summary,
             "status": {"name": status, "statusCategory": {"key": category}},
-            "issuetype": {"name": "Epic"},
+            "issuetype": {"name": issue_type},
             "assignee": {"displayName": "Jamie Fox", "emailAddress": "jamie@example.com"},
             "duedate": duedate,
             "parent": {"key": parent} if parent else None,
@@ -73,6 +74,10 @@ class _FakeClient:
         if keys:
             wanted = set(re.findall(r'"([^"]+)"', keys.group(1)))
             return [i for i in issues if i["key"] in wanted]
+        parent = re.search(r'parent = "([^"]+)"', jql)
+        if parent:
+            return [i for i in issues
+                    if (i["fields"].get("parent") or {}).get("key") == parent.group(1)]
         label = re.search(r'labels = "(.*)" ORDER', jql)
         if label:
             wanted_label = label.group(1).replace('\\"', '"')
@@ -162,7 +167,7 @@ class JiraServiceTests(unittest.TestCase):
         self.engine.dispose()
 
     def test_link_epic_upserts_issue_and_creates_link(self) -> None:
-        self.fake.add("ABC-1", status="In Progress", category="indeterminate")
+        self.fake.add("ABC-1", issue_type="Epic", status="In Progress", category="indeterminate")
         payload = schemas.JiraLinkCreate(jira_key="ABC-1", team_id=self.team_id)
         link = jira_service.link_epic_to_project(self.db, self.project_id, payload)
 
@@ -188,7 +193,7 @@ class JiraServiceTests(unittest.TestCase):
             jira_service.link_epic_to_project(self.db, self.project_id, payload)
 
     def test_ttl_triggers_refresh_on_list(self) -> None:
-        self.fake.add("ABC-9", status="To Do", category="new")
+        self.fake.add("ABC-9", issue_type="Epic", status="To Do", category="new")
         jira_service.link_epic_to_project(
             self.db, self.project_id, schemas.JiraLinkCreate(jira_key="ABC-9")
         )
@@ -204,7 +209,7 @@ class JiraServiceTests(unittest.TestCase):
         self.assertTrue(self.fake.search_calls, "stale links must trigger a refresh")
 
     def test_ttl_skips_refresh_when_fresh(self) -> None:
-        self.fake.add("ABC-3")
+        self.fake.add("ABC-3", issue_type="Epic")
         jira_service.link_epic_to_project(
             self.db, self.project_id, schemas.JiraLinkCreate(jira_key="ABC-3")
         )
@@ -214,7 +219,7 @@ class JiraServiceTests(unittest.TestCase):
         self.assertEqual(self.fake.search_calls, [])
 
     def test_unlink_removes_link_but_keeps_issue_cache(self) -> None:
-        self.fake.add("ABC-4")
+        self.fake.add("ABC-4", issue_type="Epic")
         link = jira_service.link_epic_to_project(
             self.db, self.project_id, schemas.JiraLinkCreate(jira_key="ABC-4")
         )
@@ -424,6 +429,123 @@ class JiraServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(list(grouped.links_by_milestone), [self.milestone_id])
+
+    def test_bulk_link_expands_epic_into_its_stories(self) -> None:
+        self.fake.add("EP-1", issue_type="Epic", summary="Checkout")
+        self.fake.add("ST-1", parent="EP-1")
+        self.fake.add("ST-2", parent="EP-1")
+        result = jira_service.link_issues_to_deliverable(
+            self.db, self.deliverable_id, ["EP-1"]
+        )
+        self.assertEqual(sorted(result.linked), ["ST-1", "ST-2"])
+        self.assertEqual(result.expanded, {"EP-1": ["ST-1", "ST-2"]})
+        keys = [l.issue.key for l in jira_service.list_deliverable_links(
+            self.db, self.deliverable_id)]
+        self.assertEqual(sorted(keys), ["ST-1", "ST-2"])
+
+    def test_bulk_link_epic_and_its_story_do_not_duplicate(self) -> None:
+        self.fake.add("EP-1", issue_type="Epic")
+        self.fake.add("ST-1", parent="EP-1")
+        result = jira_service.link_issues_to_deliverable(
+            self.db, self.deliverable_id, ["ST-1", "EP-1"]
+        )
+        self.assertEqual(result.linked, ["ST-1"])
+
+    def test_bulk_link_empty_epic_is_reported(self) -> None:
+        self.fake.add("EP-2", issue_type="Epic")
+        result = jira_service.link_issues_to_deliverable(
+            self.db, self.deliverable_id, ["EP-2"]
+        )
+        self.assertEqual(result.linked, [])
+        self.assertEqual(result.empty_epics, ["EP-2"])
+
+    def test_single_link_rejects_epic(self) -> None:
+        self.fake.add("EP-3", issue_type="Epic")
+        with self.assertRaises(ValueError):
+            jira_service.link_issue_to_deliverable(
+                self.db, self.deliverable_id, schemas.JiraLinkCreate(jira_key="EP-3")
+            )
+
+    def test_project_link_rejects_non_epic(self) -> None:
+        self.fake.add("ST-9")
+        with self.assertRaises(ValueError):
+            jira_service.link_epic_to_project(
+                self.db, self.project_id, schemas.JiraLinkCreate(jira_key="ST-9")
+            )
+
+    def test_linked_story_reports_parent_epic_summary(self) -> None:
+        self.fake.add("EP-4", issue_type="Epic", summary="Payments")
+        self.fake.add("ST-4", parent="EP-4")
+        jira_service.link_issues_to_deliverable(self.db, self.deliverable_id, ["ST-4"])
+        links = jira_service.list_deliverable_links(self.db, self.deliverable_id)
+        self.assertEqual(links[0].issue.parent_key, "EP-4")
+        self.assertEqual(links[0].issue.parent_summary, "Payments")
+
+
+    def _progress(self) -> int:
+        self.db.expire_all()
+        return self.db.get(models.Deliverable, self.deliverable_id).progress
+
+    def test_progress_is_done_stories_over_all_stories_excluding_epics(self) -> None:
+        self.fake.add("S-1", status="Done", category="done")
+        self.fake.add("S-2", status="In Progress", category="indeterminate")
+        self.fake.add("S-3", status="To Do", category="new")
+        self.fake.add("S-4", status="Done", category="done")
+        result = jira_service.link_issues_to_deliverable(
+            self.db, self.deliverable_id, ["S-1", "S-2", "S-3", "S-4"]
+        )
+        self.assertEqual(len(result.linked), 4)
+        self.assertEqual(self._progress(), 50)
+
+        # An epic linked directly must not count as a story.
+        epic = models.JiraIssue(
+            jira_key="E-1", jira_url="", issue_type="Epic", summary="Epic",
+            status="Done", status_category="done", raw_json="{}",
+            synced_at=datetime.utcnow(),
+        )
+        self.db.add(epic)
+        self.db.flush()
+        self.db.add(models.DeliverableJiraLink(
+            deliverable_id=self.deliverable_id, jira_issue_id=epic.id,
+            linked_at=datetime.utcnow(),
+        ))
+        self.db.commit()
+        from app import services
+        services.recalc_deliverable_progress(self.db, self.deliverable_id)
+        self.db.commit()
+        self.assertEqual(self._progress(), 50)
+
+    def test_progress_recalculates_on_unlink_and_is_zero_without_stories(self) -> None:
+        self.fake.add("S-1", status="Done", category="done")
+        self.fake.add("S-2", status="To Do", category="new")
+        jira_service.link_issues_to_deliverable(self.db, self.deliverable_id, ["S-1", "S-2"])
+        self.assertEqual(self._progress(), 50)
+        links = jira_service.list_deliverable_links(self.db, self.deliverable_id, refresh_stale=False)
+        todo = next(l for l in links if l.issue.key == "S-2")
+        jira_service.unlink_deliverable_link(self.db, self.deliverable_id, todo.id)
+        self.assertEqual(self._progress(), 100)
+        done = next(l for l in links if l.issue.key == "S-1")
+        jira_service.unlink_deliverable_link(self.db, self.deliverable_id, done.id)
+        self.assertEqual(self._progress(), 0)
+
+    def test_progress_updates_when_synced_status_changes(self) -> None:
+        self.fake.add("S-1", status="To Do", category="new")
+        jira_service.link_issues_to_deliverable(self.db, self.deliverable_id, ["S-1"])
+        self.assertEqual(self._progress(), 0)
+        self.fake.add("S-1", status="Done", category="done")
+        jira_service.sync_keys(self.db, ["S-1"])
+        self.db.commit()
+        self.assertEqual(self._progress(), 100)
+
+    def test_client_supplied_progress_is_ignored(self) -> None:
+        from app import services
+        deliverable = self.db.get(models.Deliverable, self.deliverable_id)
+        services.update_deliverable(
+            self.db, self.project_id, deliverable,
+            schemas.DeliverableUpdate(progress=80, title="Renamed"),
+        )
+        self.assertEqual(self._progress(), 0)
+        self.assertEqual(self.db.get(models.Deliverable, self.deliverable_id).title, "Renamed")
 
 
 class JiraSearchPaginationTests(unittest.TestCase):

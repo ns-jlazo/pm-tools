@@ -11,9 +11,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import requests
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
 
 from .. import models, schemas
+from ..services import recalc_deliverable_progress, recalc_progress_for_issue
 from .auth import JiraNotConfigured, get_jira_credentials
 from .client import JiraClient
 
@@ -179,7 +180,24 @@ def _parse_issue_links(raw_json: str, server_url: str) -> List[schemas.JiraIssue
     return refs
 
 
-def _issue_to_read(issue: models.JiraIssue) -> schemas.JiraIssueRead:
+def _parent_summary(issue: models.JiraIssue) -> str:
+    """Summary of the issue's parent (its epic) when that parent is cached."""
+    if not issue.parent_key:
+        return ""
+    session = object_session(issue)
+    if session is None:
+        return ""
+    parent = session.scalar(
+        select(models.JiraIssue).where(models.JiraIssue.jira_key == issue.parent_key)
+    )
+    return parent.summary if parent is not None else ""
+
+
+def _issue_to_read(
+    issue: models.JiraIssue, parent_summary: Optional[str] = None
+) -> schemas.JiraIssueRead:
+    if parent_summary is None:
+        parent_summary = _parent_summary(issue)
     return schemas.JiraIssueRead(
         id=issue.id,
         key=issue.jira_key,
@@ -191,6 +209,7 @@ def _issue_to_read(issue: models.JiraIssue) -> schemas.JiraIssueRead:
         assignee_name=issue.assignee_name,
         assignee_email=issue.assignee_email,
         parent_key=issue.parent_key,
+        parent_summary=parent_summary,
         due_date=issue.due_date,
         synced_at=issue.synced_at,
         links=_parse_issue_links(issue.raw_json, _server_base(issue.jira_url)),
@@ -228,6 +247,10 @@ def _upsert_issue(
         db.flush()
         return issue
 
+    status_changed = (
+        issue.status_category != norm["status_category"]
+        or issue.issue_type != norm["issue_type"]
+    )
     issue.jira_url = norm["jira_url"] or issue.jira_url
     issue.issue_type = norm["issue_type"]
     issue.summary = norm["summary"]
@@ -240,6 +263,8 @@ def _upsert_issue(
     issue.raw_json = json.dumps(raw)
     issue.synced_at = now
     db.flush()
+    if status_changed:
+        recalc_progress_for_issue(db, issue.id)
     return issue
 
 
@@ -757,6 +782,11 @@ def link_epic_to_project(
     issue = fetched.get(payload.jira_key.upper()) or fetched.get(payload.jira_key)
     if issue is None:
         raise ValueError(f"Jira issue {payload.jira_key} was not found.")
+    if not _is_epic(issue):
+        raise ValueError(
+            f"{issue.jira_key} is a {issue.issue_type or 'non-epic issue'}; "
+            "only epics can be linked here."
+        )
 
     existing = db.scalar(
         select(models.ProjectJiraLink).where(
@@ -869,6 +899,27 @@ def _require_owner(db: Session, kind: _LinkKind, owner_id: int):
     return owner
 
 
+def _ensure_parents_cached(db: Session, issues: Sequence[models.JiraIssue]) -> None:
+    """Fetch, in one batch, any parent epic of these issues not yet cached."""
+    parent_keys = {issue.parent_key for issue in issues if issue.parent_key}
+    if not parent_keys:
+        return
+    cached = set(
+        db.scalars(
+            select(models.JiraIssue.jira_key).where(
+                models.JiraIssue.jira_key.in_(parent_keys)
+            )
+        )
+    )
+    missing = parent_keys - cached
+    if not missing:
+        return
+    try:
+        sync_keys(db, sorted(missing))
+    except Exception as exc:  # noqa: BLE001 - the epic name is a nicety
+        logger.warning("Parent epic lookup failed for %s: %s", sorted(missing), exc)
+
+
 def _list_owner_links(
     db: Session, kind: _LinkKind, owner_id: int, refresh_stale: bool = True
 ) -> List[Any]:
@@ -888,7 +939,51 @@ def _list_owner_links(
         else:
             links = _load_links(db, kind, owner_id)
 
+    # Stories are shown under their epic, so make sure each epic is cached.
+    _ensure_parents_cached(db, [link.issue for link in links])
     return [kind.read_factory(link) for link in links]
+
+
+_EPIC_CHILD_LIMIT = 500
+
+
+def _is_epic(issue: models.JiraIssue) -> bool:
+    return (issue.issue_type or "").strip().lower() == "epic"
+
+
+def _expand_epics(
+    db: Session,
+    keys: Sequence[str],
+    fetched: Dict[str, models.JiraIssue],
+    result: schemas.JiraBulkLinkResult,
+) -> List[str]:
+    """Replace every epic key with the keys of the stories under it.
+
+    Work items link stories only, so an epic is never linked itself. It is a
+    convenient way to pick all of its stories at once. `fetched` is updated with
+    the children, `result.expanded` records epic -> stories, and an epic with no
+    stories is reported in `result.empty_epics`.
+    """
+    expanded_keys: List[str] = []
+    for key in keys:
+        issue = fetched.get(key.upper()) or fetched.get(key)
+        if issue is None or not _is_epic(issue):
+            expanded_keys.append(key)
+            continue
+        children = fetch_children(issue.jira_key, limit=_EPIC_CHILD_LIMIT)
+        child_keys = [child.key for child in children]
+        if not child_keys:
+            result.empty_epics.append(issue.jira_key)
+            continue
+        fetched.update(sync_keys(db, child_keys))
+        result.expanded[issue.jira_key] = child_keys
+        expanded_keys.extend(child_keys)
+    return list(dict.fromkeys(expanded_keys))
+
+
+def _recalc_if_deliverable(db: Session, kind: "_LinkKind", owner_id: int) -> None:
+    if kind.link_model is models.DeliverableJiraLink:
+        recalc_deliverable_progress(db, owner_id)
 
 
 def _link_one(
@@ -900,6 +995,11 @@ def _link_one(
     issue = fetched.get(payload.jira_key.upper()) or fetched.get(payload.jira_key)
     if issue is None:
         raise ValueError(f"Jira issue {payload.jira_key} was not found.")
+    if _is_epic(issue):
+        raise ValueError(
+            f"{issue.jira_key} is an epic. Work items link stories only; "
+            "link the epic through the bulk endpoint to link all of its stories."
+        )
 
     existing = db.scalar(
         select(kind.link_model).where(
@@ -916,6 +1016,8 @@ def _link_one(
         linked_at=datetime.utcnow(),
     )
     db.add(link)
+    db.flush()
+    _recalc_if_deliverable(db, kind, owner_id)
     db.commit()
     db.refresh(link)
     return kind.read_factory(link)
@@ -937,11 +1039,12 @@ def _link_many(
         return schemas.JiraBulkLinkResult()
 
     fetched = sync_keys(db, requested)
+    result = schemas.JiraBulkLinkResult()
+    requested = _expand_epics(db, requested, fetched, result)
     existing_issue_ids = {
         link.jira_issue_id for link in _load_links(db, kind, owner_id)
     }
 
-    result = schemas.JiraBulkLinkResult()
     now = datetime.utcnow()
     for key in requested:
         issue = fetched.get(key.upper()) or fetched.get(key)
@@ -962,6 +1065,8 @@ def _link_many(
         result.linked.append(issue.jira_key)
 
     if result.linked:
+        db.flush()
+        _recalc_if_deliverable(db, kind, owner_id)
         db.commit()
     return result
 
@@ -971,6 +1076,8 @@ def _unlink(db: Session, kind: _LinkKind, owner_id: int, link_id: int) -> None:
     if link is None or kind.owner_id_of(link) != owner_id:
         raise ValueError("Link not found.")
     db.delete(link)
+    db.flush()
+    _recalc_if_deliverable(db, kind, owner_id)
     db.commit()
 
 

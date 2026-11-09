@@ -716,6 +716,48 @@ def _check_label_range(start: Optional[date], end: Optional[date]) -> None:
         raise ValueError("Jira label range start must be on or before its end.")
 
 
+def compute_deliverable_progress(db: Session, deliverable_id: int) -> int:
+    """Percent of a deliverable's linked stories that are done.
+
+    Epics are never counted as stories. With no stories the result is 0.
+    """
+    rows = db.execute(
+        select(models.JiraIssue.issue_type, models.JiraIssue.status_category)
+        .join(
+            models.DeliverableJiraLink,
+            models.DeliverableJiraLink.jira_issue_id == models.JiraIssue.id,
+        )
+        .where(models.DeliverableJiraLink.deliverable_id == deliverable_id)
+    ).all()
+    stories = [r for r in rows if (r[0] or "").strip().lower() != "epic"]
+    if not stories:
+        return 0
+    done = sum(1 for r in stories if (r[1] or "").strip().lower() == "done")
+    return round(done / len(stories) * 100)
+
+
+def recalc_deliverable_progress(db: Session, deliverable_id: int) -> None:
+    """Recompute and store progress for one deliverable (caller commits)."""
+    deliverable = db.get(models.Deliverable, deliverable_id)
+    if deliverable is None:
+        return
+    value = compute_deliverable_progress(db, deliverable_id)
+    if deliverable.progress != value:
+        deliverable.progress = value
+
+
+def recalc_progress_for_issue(db: Session, jira_issue_id: int) -> None:
+    """Recompute progress for every deliverable linked to a Jira issue."""
+    db.flush()
+    ids = db.scalars(
+        select(models.DeliverableJiraLink.deliverable_id).where(
+            models.DeliverableJiraLink.jira_issue_id == jira_issue_id
+        )
+    ).all()
+    for deliverable_id in set(ids):
+        recalc_deliverable_progress(db, deliverable_id)
+
+
 def create_deliverable(
     db: Session, project_id: int, payload: schemas.DeliverableCreate
 ) -> models.Deliverable:
@@ -735,7 +777,7 @@ def create_deliverable(
         current_start=payload.current_start,
         current_end=payload.current_end,
         status=payload.status,
-        progress=payload.progress,
+        progress=0,
         jira_label=payload.jira_label,
         jira_label_project_key=payload.jira_label_project_key,
         jira_label_from=payload.jira_label_from,
@@ -762,6 +804,8 @@ def update_deliverable(
     updates = payload.model_dump(exclude_unset=True)
     dependency_ids = updates.pop("dependency_ids", None)
     contributor_ids = updates.pop("contributor_team_ids", None)
+    # Progress is derived from linked Jira stories; never accept it from clients.
+    updates.pop("progress", None)
 
     if "team_id" in updates:
         team = db.get(models.Team, updates["team_id"])
@@ -920,7 +964,7 @@ def import_csv(
                 current_start=_parse_date(row.get("current_start")),
                 current_end=_parse_date(row.get("current_end")),
                 status=(row.get("status") or "planned").strip() or "planned",
-                progress=int((row.get("progress") or "0").strip() or "0"),
+                progress=0,
             )
         except ValueError as exc:
             errors.append(f"Row {index}: {exc}")
