@@ -1,8 +1,15 @@
 from typing import Dict, List, Optional
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """SQLite drops tzinfo; created_at is always stored as UTC, so restore it."""
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 class ProjectCreate(BaseModel):
@@ -33,6 +40,9 @@ class ProjectRead(BaseModel):
     color: str
     is_example: bool = False
     status: str = "active"
+    created_at: Optional[datetime] = None
+
+    _created_at_utc = field_validator("created_at")(_as_utc)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -70,6 +80,8 @@ class ProjectCard(BaseModel):
     color: str
     is_example: bool = False
     status: str = "active"
+    created_at: Optional[datetime] = None
+    _created_at_utc = field_validator("created_at")(_as_utc)
     total_deliverables: int
     delayed_deliverables: int
     at_risk_deliverables: int

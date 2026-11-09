@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, inspect, text
 
 from app.main import (
     _migrate_deliverable_rename,
+    _migrate_created_at,
     _migrate_example_flag,
     _migrate_jira_label,
     _migrate_release_date,
@@ -451,3 +452,44 @@ class ReleasesMigrationTests(unittest.TestCase):
         with self.engine.begin() as connection:
             count = connection.execute(text("SELECT COUNT(*) FROM releases")).scalar()
         self.assertEqual(count, 2)
+
+class MigrateCreatedAtTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = create_engine(
+            "sqlite:///:memory:", connect_args={"check_same_thread": False}
+        )
+        with self.engine.begin() as connection:
+            connection.execute(text(_LEGACY_DDL[0]))
+            connection.execute(text("INSERT INTO projects VALUES (1, 'Alpha', '', '#0f766e')"))
+            connection.execute(text("INSERT INTO projects VALUES (2, 'Beta', '', '#0f766e')"))
+
+    def tearDown(self) -> None:
+        self.engine.dispose()
+
+    def _stamps(self) -> list:
+        with self.engine.begin() as connection:
+            return [r[0] for r in connection.execute(text("SELECT created_at FROM projects ORDER BY id"))]
+
+    def test_backfills_existing_rows_with_the_migration_time(self) -> None:
+        _migrate_created_at(self.engine)
+
+        stamps = self._stamps()
+        self.assertEqual(len(stamps), 2)
+        self.assertTrue(all(stamps))
+        self.assertEqual(stamps[0], stamps[1])
+
+    def test_second_run_is_a_no_op(self) -> None:
+        _migrate_created_at(self.engine)
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE projects SET created_at = '2020-01-01 00:00:00'"))
+
+        _migrate_created_at(self.engine)
+
+        self.assertEqual(self._stamps(), ["2020-01-01 00:00:00"] * 2)
+
+    def test_no_ops_when_projects_table_is_absent(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        _migrate_created_at(engine)  # must not raise
+        self.assertEqual(set(inspect(engine).get_table_names()), set())
+        engine.dispose()
+

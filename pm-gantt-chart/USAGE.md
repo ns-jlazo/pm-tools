@@ -118,7 +118,7 @@ Save to persist the change. Risk signals and timeline styling update immediately
 
 ### Creating a Project
 
-Click **New Project** on the portfolio page and fill in the name and description.
+Click **New Project** on the portfolio page (the dashboard is the only place to create one) and fill in the name and description.
 
 ### Adding Teams and Tasks
 

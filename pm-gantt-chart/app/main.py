@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -158,6 +159,29 @@ def _migrate_release_date(bind=None) -> None:
         connection.execute(text("ALTER TABLE projects ADD COLUMN release_date DATE"))
 
 
+def _migrate_created_at(bind=None) -> None:
+    """Add `projects.created_at` (UTC) and backfill existing rows.
+
+    SQLite cannot add a column with a non-constant default, so the column goes in
+    nullable and every pre-existing workspace is stamped with the moment this
+    migration runs. Idempotent via the column check: the backfill happens once.
+    """
+    bind = bind if bind is not None else engine
+    inspector = inspect(bind)
+    if "projects" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("projects")}
+    if "created_at" in columns:
+        return
+
+    migrated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    with bind.begin() as connection:
+        connection.execute(text("ALTER TABLE projects ADD COLUMN created_at DATETIME"))
+        connection.execute(
+            text("UPDATE projects SET created_at = :now"), {"now": migrated_at}
+        )
+
+
 def _migrate_jira_label(bind=None) -> None:
     """Add the `deliverables.jira_label*` columns.
 
@@ -247,6 +271,7 @@ def _ensure_v2_schema() -> None:
     _migrate_deliverable_rename(engine)
     _migrate_example_flag(engine)
     _migrate_release_date(engine)
+    _migrate_created_at(engine)
     _migrate_jira_label(engine)
     _migrate_releases(engine)
     # Adds any table an existing database is missing — the milestone tables, and

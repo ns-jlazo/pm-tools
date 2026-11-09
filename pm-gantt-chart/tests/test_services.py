@@ -667,6 +667,16 @@ class ExampleWorkspaceFlagTests(unittest.TestCase):
 
         self.assertEqual(cards, {"Demo": True, "Customer Work": False})
 
+    def test_new_projects_get_a_utc_created_at(self) -> None:
+        services.create_project(
+            self.db, schemas.ProjectCreate(name="Fresh", description="")
+        )
+
+        card = next(c for c in services.project_cards(self.db) if c.name == "Fresh")
+
+        self.assertIsNotNone(card.created_at)
+        self.assertEqual(card.created_at.utcoffset().total_seconds(), 0)
+
 
 class DeliverableJiraLabelTests(unittest.TestCase):
     """The label and its date window round-trip through create and update."""

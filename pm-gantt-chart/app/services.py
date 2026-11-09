@@ -1047,6 +1047,7 @@ def project_cards(db: Session) -> List[schemas.ProjectCard]:
                 color=project.color,
                 is_example=project.is_example,
                 status=project.status,
+                created_at=project.created_at,
                 total_deliverables=len(deliverables),
                 delayed_deliverables=sum(1 for item in deliverables if item.delayed),
                 at_risk_deliverables=sum(1 for item in deliverables if item.at_risk),

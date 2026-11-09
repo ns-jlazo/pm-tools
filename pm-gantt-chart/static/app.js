@@ -265,7 +265,7 @@ function writeStored(key, value) {
 // Surface-only label check: asks the server which labelled deliverables have
 // Jira stories that are not linked yet. It never links anything; the badge it
 // feeds just opens the picker. The server throttles by JIRA_SYNC_TTL_SECONDS, and
-// every failure is soft — a missing Jira config must not break the workspace.
+// every failure is soft — a missing Jira config must not break the app.
 const LABEL_SYNC_REFOCUS_MS = 60 * 1000;
 
 function useLabelSync(projectId, onMessage) {
@@ -310,14 +310,14 @@ function useLabelSync(projectId, onMessage) {
     }
   };
 
-  // On opening a workspace the dashboard has already rendered; the badges fill
+  // On opening a project the dashboard has already rendered; the badges fill
   // in when this resolves.
   useEffect(() => {
     setByDeliverable({});
     run();
   }, [projectId]);
 
-  // People leave a workspace open all day: re-check when the tab comes back.
+  // People leave a project open all day: re-check when the tab comes back.
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === "visible" && Date.now() - lastRun.current > LABEL_SYNC_REFOCUS_MS) {
@@ -647,7 +647,7 @@ function JiraPickerModal({
   // deliverable panel) renders this modal from inside its own <form>. Chrome
   // does not bubble a nested form's submit event out to React's delegated
   // listener, so onSubmit never fired, nothing called preventDefault, and the
-  // browser did a native GET that reloaded the app back to the landing page.
+  // browser did a native GET that reloaded the app back to the dashboard.
   // The modal is portalled out of the DOM tree below, which fixes the native
   // event; stopPropagation keeps the *synthetic* event — which still travels up
   // the React tree, portal or not — from also submitting that outer form.
@@ -2162,7 +2162,7 @@ function LoadingShell({ copy }) {
   return html`
     <div className="loading-shell" role="status" aria-live="polite" aria-label="Loading">
       <div className="loading-card">
-        <div className="eyebrow">Booting timeline workspace</div>
+        <div className="eyebrow">Booting timeline dashboard</div>
         <h1 className="hero-title">${copy}</h1>
         <div className="skeleton-lines" aria-hidden="true">
           <div className="skeleton-line"></div>
@@ -2296,7 +2296,7 @@ function ProjectCard({ project, onOpenProject, onConvert }) {
         : null}
       <div className="actions">
         <button className="button-primary" type="button" onClick=${() => onOpenProject(project.id)}>
-          Open workspace
+          Open project
         </button>
         ${project.is_example
           ? html`<button className="button-secondary" type="button" onClick=${() => onConvert(project)}>
@@ -2308,12 +2308,12 @@ function ProjectCard({ project, onOpenProject, onConvert }) {
   `;
 }
 
-function ProjectSection({ title, copy, projects, emptyText, onOpenProject, onConvert, className }) {
+function ProjectSection({ title, copy, projects, total, emptyText, onOpenProject, onConvert, className }) {
   return html`
     <section className=${`project-section ${className || ""}`}>
       <div className="project-section-heading">
         <h2>${title}</h2>
-        <span className="tiny-pill">${projects.length}</span>
+        <span className="tiny-pill">${total ?? projects.length}</span>
       </div>
       <p className="panel-copy">${copy}</p>
       ${projects.length
@@ -2336,53 +2336,93 @@ function ProjectSection({ title, copy, projects, emptyText, onOpenProject, onCon
   `;
 }
 
-function LandingView({ projects, onOpenProject, onNewWorkspace, onConvert }) {
-  // Inactive wins over everything: a finished project is out of the way whether or
-  // not it started life as an example. Real project work first; examples below.
+// Inactive wins over everything: a finished project is out of the way whether or
+// not it started life as an example. Real project work first; examples below.
+// Shared by the dashboard and the sidebar so both group workspaces identically.
+function groupProjects(projects) {
   const inactiveProjects = projects.filter((project) => project.status === "inactive");
   const liveProjects = projects.filter((project) => project.status !== "inactive");
-  const activeProjects = liveProjects.filter((project) => !project.is_example);
-  const exampleProjects = liveProjects.filter((project) => project.is_example);
+  return {
+    activeProjects: liveProjects.filter((project) => !project.is_example),
+    exampleProjects: liveProjects.filter((project) => project.is_example),
+    inactiveProjects,
+  };
+}
+
+const DASHBOARD_PROJECTS_PER_GROUP = 3;
+
+// The few projects whose next release is coming up soonest (today or later).
+// Projects with no upcoming release date are left out of the dashboard lists.
+function soonestByRelease(projects, limit = DASHBOARD_PROJECTS_PER_GROUP) {
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
+    now.getDate()
+  ).padStart(2, "0")}`;
+  return projects
+    .filter((project) => project.next_release_date && project.next_release_date >= today)
+    .sort((a, b) => a.next_release_date.localeCompare(b.next_release_date))
+    .slice(0, limit);
+}
+
+// The few most recently created projects. Example projects have no release dates
+// to rank by; `id` breaks ties between rows that share a created_at (migrated ones).
+function mostRecentlyCreated(projects, limit = DASHBOARD_PROJECTS_PER_GROUP) {
+  const stamp = (project) => (project.created_at ? Date.parse(project.created_at) || 0 : 0);
+  return [...projects].sort((a, b) => stamp(b) - stamp(a) || b.id - a.id).slice(0, limit);
+}
+
+function alphabetical(projects) {
+  return [...projects].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function DashboardView({ projects, onOpenProject, onNewProject, onConvert }) {
+  const grouped = groupProjects(projects);
+  const activeProjects = soonestByRelease(grouped.activeProjects);
+  const exampleProjects = mostRecentlyCreated(grouped.exampleProjects);
+  const inactiveProjects = alphabetical(grouped.inactiveProjects);
 
   return html`
     <div className="app-shell">
-      <header className="dashboard-header">
+      <section className="landing-hero hero-card landing-hero-row">
         <div>
-          <h1 className="dashboard-title">Project workspaces</h1>
-          <p className="dashboard-subtitle">
-            Pick a workspace, then a release, to review timeline risk, dependencies, and delivery status.
+          <div className="eyebrow">PM Tool v1</div>
+          <h1 className="hero-title">PPM Dashboard</h1>
+          <p className="hero-copy">
+            Select an onboarded project to review timeline risk, dependencies, and delivery status.
           </p>
         </div>
-        <button className="button-primary" type="button" onClick=${onNewWorkspace}>
-          + New Project Workspace
+        <button className="button-primary" type="button" onClick=${onNewProject}>
+          + New Project
         </button>
-      </header>
+      </section>
 
       <${ProjectSection}
-        title="Active workspaces"
-        copy="Workspaces tracking real delivery work."
+        title="Active projects"
+        copy="Projects tracking real delivery work — the 3 with the nearest upcoming release."
+        total=${grouped.activeProjects.length}
         projects=${activeProjects}
-        emptyText="No active workspaces yet — use “+ New Project Workspace” to create one."
+        emptyText="No active projects yet — use “+ New Project” to create one."
         onOpenProject=${onOpenProject}
         onConvert=${onConvert}
       />
 
-      ${exampleProjects.length
+      ${grouped.exampleProjects.length
         ? html`<${ProjectSection}
             className="examples"
-            title="Example workspaces"
-            copy="Reference layouts for guidance — safe to experiment in. Use “Make active” to start real work in one."
+            title="Example projects"
+            total=${grouped.exampleProjects.length}
+            copy="Reference layouts for guidance — safe to experiment in. Showing the 3 most recently created. Use “Make active” to start real work in one."
             projects=${exampleProjects}
             onOpenProject=${onOpenProject}
             onConvert=${onConvert}
           />`
         : null}
 
-      ${inactiveProjects.length
+      ${grouped.inactiveProjects.length
         ? html`
             <details className="inactive-group">
               <summary>
-                Inactive workspaces <span className="tiny-pill">${inactiveProjects.length}</span>
+                Inactive projects <span className="tiny-pill">${grouped.inactiveProjects.length}</span>
               </summary>
               <p className="panel-copy">Projects no longer under way. Still viewable; set one back to active in its settings.</p>
               <div className="project-grid">
@@ -2402,18 +2442,18 @@ function LandingView({ projects, onOpenProject, onNewWorkspace, onConvert }) {
   `;
 }
 
-const WORKSPACE_TYPE_OPTIONS = [
-  { value: "active", label: "Active workspace" },
-  { value: "example", label: "Example workspace" },
+const PROJECT_TYPE_OPTIONS = [
+  { value: "active", label: "Active project" },
+  { value: "example", label: "Example project" },
 ];
-const WORKSPACE_STATUS_OPTIONS = [
+const PROJECT_STATUS_OPTIONS = [
   { value: "active", label: "Active" },
   { value: "inactive", label: "Inactive" },
 ];
 
-// Creating a workspace is a side panel, not a form parked on the page. The type
-// choice is explicit: example workspaces are demo material, listed apart.
-function NewWorkspaceDrawer({ onClose, onCreate, submitting }) {
+// Creating a project is a side panel, not a form parked on the page. The type
+// choice is explicit: example projects are demo material, listed apart.
+function NewProjectDrawer({ onClose, onCreate, submitting }) {
   const [form, setForm] = useState(DEFAULT_PROJECT);
 
   const submit = async (event) => {
@@ -2431,19 +2471,19 @@ function NewWorkspaceDrawer({ onClose, onCreate, submitting }) {
   };
 
   return html`
-    <${SideDrawer} title="New project workspace" onClose=${onClose}>
+    <${SideDrawer} title="New project" onClose=${onClose}>
       <form onSubmit=${submit}>
         <div className="form-grid">
           <div className="field-wide">
-            <label>Workspace type</label>
+            <label>Project type</label>
             <${SegmentedControl}
-              ariaLabel="Workspace type"
+              ariaLabel="Project type"
               value=${form.is_example ? "example" : "active"}
-              options=${WORKSPACE_TYPE_OPTIONS}
+              options=${PROJECT_TYPE_OPTIONS}
               onChange=${(value) => setForm({ ...form, is_example: value === "example" })}
             />
             <span className="help-text">
-              Active workspaces track real delivery work. Example workspaces are listed separately and can be made active later.
+              Active projects track real delivery work. Example projects are listed separately and can be made active later.
             </span>
           </div>
           <div className="field-wide">
@@ -2466,7 +2506,7 @@ function NewWorkspaceDrawer({ onClose, onCreate, submitting }) {
                 autoFocus
               />
             </div>
-            <span className="help-text">The square sets the workspace accent color.</span>
+            <span className="help-text">The square sets the project accent color.</span>
           </div>
           <div className="field-wide">
             <label htmlFor="project-description">Description</label>
@@ -2505,7 +2545,7 @@ function NewWorkspaceDrawer({ onClose, onCreate, submitting }) {
             type="submit"
             disabled=${submitting || !form.name.trim()}
             aria-busy=${submitting}
-          >Create workspace</button>
+          >Create project</button>
           <button className="button-secondary" type="button" onClick=${onClose}>Cancel</button>
         </div>
       </form>
@@ -2513,8 +2553,8 @@ function NewWorkspaceDrawer({ onClose, onCreate, submitting }) {
   `;
 }
 
-// Promotes an example workspace to a real one. The sample deliverables are kept
-// unless the user opts to clear them, so the workspace is not silently emptied.
+// Promotes an example project to a real one. The sample deliverables are kept
+// unless the user opts to clear them, so the project is not silently emptied.
 function ConvertToActiveSection({ project, summary, onNotify, onDone }) {
   const [clearSamples, setClearSamples] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -2528,7 +2568,7 @@ function ConvertToActiveSection({ project, summary, onNotify, onDone }) {
         method: "PUT",
         body: JSON.stringify({ is_example: false, clear_sample_data: clearSamples }),
       });
-      onNotify(`"${project.name}" is now an active workspace.`, "success");
+      onNotify(`"${project.name}" is now an active project.`, "success");
       await onDone();
     } catch (err) {
       setError(err.message);
@@ -2538,9 +2578,9 @@ function ConvertToActiveSection({ project, summary, onNotify, onDone }) {
 
   return html`
     <div className="convert-section">
-      <strong>Example workspace</strong>
+      <strong>Example project</strong>
       <p className="panel-copy" style=${{ margin: 0 }}>
-        This is sample material. Convert it to an active workspace to start tracking real delivery work in it.
+        This is sample material. Convert it to an active project to start tracking real delivery work in it.
       </p>
       <label className="checkbox-field" htmlFor=${`convert-clear-${project.id}`}>
         <input
@@ -2554,7 +2594,7 @@ function ConvertToActiveSection({ project, summary, onNotify, onDone }) {
       <span className="help-text">Teams are kept either way.</span>
       <div className="actions">
         <button className="button-primary" type="button" onClick=${convert} disabled=${busy} aria-busy=${busy}>
-          Convert to active workspace
+          Convert to active project
         </button>
       </div>
       ${error ? html`<div className="side-drawer-row-error">${error}</div>` : null}
@@ -3495,7 +3535,7 @@ function DeliverableRosterPanel({
         ? null
         : html`<div className="help-text">
             Add a team before the first deliverable — open the Teams card at the top of the
-            workspace.
+            release overview.
           </div>`}
 
       ${importOpen
@@ -4142,7 +4182,7 @@ function GanttChart({
     "--col-width": timeline.unit === "week" ? "56px" : "34px",
   };
 
-  // The release date and every other named date the workspace carries. Each one
+  // The release date and every other named date the project carries. Each one
   // draws a vertical line down the chart body, and a label in the band that sits
   // between the day headings and the first row — the band is reserved space, so a
   // label can never be covered by a deliverable bar. Labels of dates that fall
@@ -4712,7 +4752,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
         method: "PUT",
         body: JSON.stringify({ ...draft, name: draft.name.trim() }),
       });
-      onNotify(`Workspace "${draft.name.trim()}" updated.`, "success");
+      onNotify(`Project "${draft.name.trim()}" updated.`, "success");
       await onSaved();
       onClose();
     } catch (err) {
@@ -4728,7 +4768,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
     setError("");
     try {
       await api(`/api/projects/${project.id}`, { method: "DELETE" });
-      onNotify(`Workspace "${project.name}" deleted.`, "success");
+      onNotify(`Project "${project.name}" deleted.`, "success");
       await onDeleted();
     } catch (err) {
       setError(err.message);
@@ -4737,7 +4777,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
   };
 
   return html`
-    <${SideDrawer} title="Edit workspace" ariaLabel="Edit project workspace" onClose=${onClose}>
+    <${SideDrawer} title="Edit project" ariaLabel="Edit project" onClose=${onClose}>
         ${project.is_example
           ? html`<${ConvertToActiveSection}
               project=${project}
@@ -4771,7 +4811,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
                   required
                 />
               </div>
-              <span className="help-text">The swatch is this workspace's accent color.</span>
+              <span className="help-text">The swatch is this project's accent color.</span>
             </div>
             <div className="field-wide">
               <label htmlFor="project-edit-description">Description</label>
@@ -4786,13 +4826,13 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
             <div className="field-wide">
               <label>Status</label>
               <${SegmentedControl}
-                ariaLabel="Workspace status"
+                ariaLabel="Project status"
                 value=${draft.status}
-                options=${WORKSPACE_STATUS_OPTIONS}
+                options=${PROJECT_STATUS_OPTIONS}
                 onChange=${(value) => setDraft({ ...draft, status: value })}
               />
               <span className="help-text">
-                Mark a workspace inactive when the project is no longer on-going. It moves to the Inactive section of the dashboard and stays viewable.
+                Mark a project inactive when the project is no longer on-going. It moves to the Inactive section of the dashboard and stays viewable.
               </span>
             </div>
           </div>
@@ -4809,7 +4849,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
         <div className="project-drawer-danger">
           <strong>Danger zone</strong>
           <p className="panel-copy" style=${{ margin: 0 }}>
-            Deleting this workspace also removes its releases, ${summary.total_deliverables} deliverable(s), ${summary.total_teams} team(s), and every Jira link on them. This cannot be undone.
+            Deleting this project also removes its releases, ${summary.total_deliverables} deliverable(s), ${summary.total_teams} team(s), and every Jira link on them. This cannot be undone.
           </p>
           <div className="field-wide">
             <label htmlFor="project-delete-confirm">
@@ -4829,7 +4869,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
               type="button"
               onClick=${removeProject}
               disabled=${busy || !canDelete}
-            >Delete workspace</button>
+            >Delete project</button>
           </div>
         </div>
 
@@ -4839,7 +4879,7 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
 }
 
 // Create or edit one release. Its timeline dates ride along when editing: key
-// dates belong to a release, so they are managed here rather than per workspace.
+// dates belong to a release, so they are managed here rather than per project.
 function ReleaseDrawer({ projectId, release, keyDates, onClose, onNotify, onSaved, onDeleted }) {
   const editing = Boolean(release);
   const [draft, setDraft] = useState({
@@ -4982,9 +5022,9 @@ function ReleaseDrawer({ projectId, release, keyDates, onClose, onNotify, onSave
   `;
 }
 
-// A workspace's front door: its releases as cards. Opening one shows that
+// A project workspace's front door: its releases as cards. Opening one shows that
 // release's timeline.
-function WorkspaceHomeView({ project, onBack, onOpenRelease, onNotify, onProjectChanged, onProjectDeleted }) {
+function ProjectWorkspaceView({ project, onBack, onOpenRelease, onNotify, onProjectChanged, onProjectDeleted, onReleasesChanged }) {
   const [releases, setReleases] = useState(null);
   const [drawer, setDrawer] = useState(null); // "settings" | "new-release"
 
@@ -5006,16 +5046,17 @@ function WorkspaceHomeView({ project, onBack, onOpenRelease, onNotify, onProject
   return html`
     <div className="app-shell">
       <div className="workspace-topbar">
-        <button className="back-link" type="button" onClick=${onBack}>
-          <${BackArrowIcon} />
-          Back to workspaces
-        </button>
+        <nav className="breadcrumb" aria-label="Breadcrumb">
+          <button className="back-link" type="button" onClick=${onBack}>Dashboard</button>
+          <span className="breadcrumb-sep" aria-hidden="true">›</span>
+          <span className="breadcrumb-current">${project.name}</span>
+        </nav>
       </div>
 
       <section className="hero">
         <div className="hero-card" style=${{ "--project-color": project.color }}>
           <div className="eyebrow">
-            Project workspace
+            Project
             ${project.is_example ? html` · <span className="project-example-pill tiny-pill">Example</span>` : null}
             ${inactive ? html` · <span className="project-inactive-pill tiny-pill">Inactive</span>` : null}
           </div>
@@ -5025,8 +5066,8 @@ function WorkspaceHomeView({ project, onBack, onOpenRelease, onNotify, onProject
               className="icon-button"
               type="button"
               onClick=${() => setDrawer("settings")}
-              aria-label="Edit project workspace"
-              title="Edit workspace"
+              aria-label="Edit project"
+              title="Edit project"
             ><${PencilIcon} /></button>
           </div>
           <p className="hero-copy">
@@ -5057,11 +5098,6 @@ function WorkspaceHomeView({ project, onBack, onOpenRelease, onNotify, onProject
                         <strong>${release.name}</strong>
                       </div>
                       <p className="panel-copy project-card-copy">${release.description || "No description yet."}</p>
-                      <div className="project-stats">
-                        <span className="tiny-pill">${release.total_deliverables} deliverables</span>
-                        <span className="tiny-pill">${release.at_risk_deliverables} at risk</span>
-                        <span className="tiny-pill">${release.delayed_deliverables} delayed</span>
-                      </div>
                       <p className="help-text project-card-release">
                         ${release.release_date
                           ? `Release · ${formatReleaseDate(release.release_date)}`
@@ -5101,6 +5137,7 @@ function WorkspaceHomeView({ project, onBack, onOpenRelease, onNotify, onProject
             onSaved=${async () => {
               await loadReleases();
               await onProjectChanged();
+              if (onReleasesChanged) onReleasesChanged();
             }}
             onDeleted=${async () => {}}
           />`
@@ -5187,9 +5224,10 @@ function DeliverableTable({ deliverables }) {
   `;
 }
 
-function WorkspaceView({
+function ReleaseOverviewView({
   dashboard,
   onBack,
+  onDashboard,
   onSwitchRelease,
   onReleaseDeleted,
   csvFile,
@@ -5198,7 +5236,7 @@ function WorkspaceView({
   deliverableActions,
   milestoneActions,
   onNotify,
-  onWorkspaceRefresh,
+  onProjectRefresh,
   submitting,
 }) {
   const teams = dashboard.teams;
@@ -5217,13 +5255,13 @@ function WorkspaceView({
   return html`
     <div className="app-shell">
       <div className="workspace-topbar">
-        <button className="back-link" type="button" onClick=${onBack}>
-          <${BackArrowIcon} />
-          Back to ${dashboard.project.name}
-        </button>
-        <label className="release-switcher">
-          <span>Release</span>
+        <nav className="breadcrumb" aria-label="Breadcrumb">
+          <button className="back-link" type="button" onClick=${onDashboard}>Dashboard</button>
+          <span className="breadcrumb-sep" aria-hidden="true">›</span>
+          <button className="back-link" type="button" onClick=${onBack}>${dashboard.project.name}</button>
+          <span className="breadcrumb-sep" aria-hidden="true">›</span>
           <select
+            className="release-switcher-select"
             value=${release.id}
             onChange=${(event) => onSwitchRelease(Number(event.target.value))}
             aria-label="Switch release"
@@ -5232,12 +5270,12 @@ function WorkspaceView({
               (item) => html`<option key=${item.id} value=${item.id}>${item.name}</option>`
             )}
           </select>
-        </label>
+        </nav>
       </div>
 
       <section className="hero">
         <div className="hero-card">
-          <div className="eyebrow">Project workspace</div>
+          <div className="eyebrow">Release overview</div>
           <div className="hero-title-row">
             <h1 className="hero-title">${dashboard.project.name}</h1>
           </div>
@@ -5310,7 +5348,7 @@ function WorkspaceView({
           setEpicKeys(keys);
           setEpicTeams(teamsByEpic);
         }}
-        onTeamsChanged=${onWorkspaceRefresh}
+        onTeamsChanged=${onProjectRefresh}
         onCheckLabels=${() => labelSync.run({ force: true, announce: true })}
         checkingLabels=${labelSync.checking}
       />
@@ -5341,7 +5379,7 @@ function WorkspaceView({
             keyDates=${keyDates}
             onClose=${() => setDrawer(null)}
             onNotify=${onNotify}
-            onSaved=${onWorkspaceRefresh}
+            onSaved=${onProjectRefresh}
             onDeleted=${onReleaseDeleted}
           />`
         : null}
@@ -5349,14 +5387,197 @@ function WorkspaceView({
   `;
 }
 
+const projectWorkspacePath = (projectId) => `/w/${projectId}`;
+const releasePath = (projectId, releaseId) => `/w/${projectId}/r/${releaseId}`;
+
+function parseRoute() {
+  const match = window.location.hash.replace(/^#/, "").match(/^\/w\/(\d+)(?:\/r\/(\d+))?\/?$/);
+  if (!match) return { projectId: null, releaseId: null };
+  return { projectId: Number(match[1]), releaseId: match[2] ? Number(match[2]) : null };
+}
+
+function navigate(path, replace = false) {
+  const target = `#${path}`;
+  if (window.location.hash === target || (path === "/" && !window.location.hash)) return;
+  if (replace) {
+    window.history.replaceState(null, "", target);
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  } else {
+    window.location.hash = target;
+  }
+}
+
+function AppSidebar({
+  projects,
+  selectedProjectId,
+  selectedReleaseId,
+  releases,
+  onOpenProject,
+  onOpenRelease,
+  onGoDashboard,
+  onCollapse,
+}) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const matching = needle
+    ? projects.filter((project) => project.name.toLowerCase().includes(needle))
+    : projects;
+  const { activeProjects, exampleProjects, inactiveProjects } = groupProjects(matching);
+
+  const renderProject = (project) => {
+    const current = project.id === selectedProjectId;
+    return html`
+      <li key=${project.id}>
+        <button
+          type="button"
+          className=${`sidebar-item ${current ? "current" : ""}`}
+          aria-current=${current && !selectedReleaseId ? "page" : undefined}
+          onClick=${() => onOpenProject(project.id)}
+        >
+          <span className="project-dot" style=${{ "--project-color": project.color }}></span>
+          <span className="sidebar-item-label">${project.name}</span>
+        </button>
+        ${current && releases.length
+          ? html`
+              <ul className="sidebar-releases">
+                ${releases.map(
+                  (release) => html`
+                    <li key=${release.id}>
+                      <button
+                        type="button"
+                        className=${`sidebar-item sub ${release.id === selectedReleaseId ? "current" : ""}`}
+                        aria-current=${release.id === selectedReleaseId ? "page" : undefined}
+                        onClick=${() => onOpenRelease(release.id, project.id)}
+                      ><span className="sidebar-item-label">${release.name}</span></button>
+                    </li>
+                  `
+                )}
+              </ul>
+            `
+          : null}
+      </li>
+    `;
+  };
+
+  const renderGroup = (title, list) =>
+    list.length
+      ? html`
+          <div className="sidebar-group">
+            <div className="sidebar-group-title">${title}</div>
+            <ul>${list.map(renderProject)}</ul>
+          </div>
+        `
+      : null;
+
+  return html`
+    <aside className="app-sidebar" aria-label="Projects">
+      <div className="sidebar-head">
+        <button type="button" className="sidebar-item" onClick=${onGoDashboard}>Dashboard</button>
+        <button
+          type="button"
+          className="icon-button"
+          onClick=${onCollapse}
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar"
+        >«</button>
+      </div>
+      <input
+        type="search"
+        className="sidebar-search"
+        placeholder="Search projects"
+        aria-label="Search projects"
+        value=${query}
+        onInput=${(event) => setQuery(event.target.value)}
+      />
+      <nav className="sidebar-scroll">
+        ${renderGroup("Active", activeProjects)}
+        ${renderGroup("Example", exampleProjects)}
+        ${inactiveProjects.length
+          ? html`
+              <details className="sidebar-group" open=${Boolean(needle) || inactiveProjects.some((p) => p.id === selectedProjectId)}>
+                <summary className="sidebar-group-title">Inactive (${inactiveProjects.length})</summary>
+                <ul>${inactiveProjects.map(renderProject)}</ul>
+              </details>
+            `
+          : null}
+        ${matching.length ? null : html`<p className="help-text">No matching projects.</p>`}
+      </nav>
+    </aside>
+  `;
+}
+
+// Cmd/Ctrl+K jump. Lists workspaces plus the open workspace's releases; no
+// recents or ordering by use, since there is no per-user data separation.
+function CommandPalette({ items, onPick, onClose }) {
+  const [query, setQuery] = useState("");
+  const [index, setIndex] = useState(0);
+  const needle = query.trim().toLowerCase();
+  const results = (needle ? items.filter((item) => item.label.toLowerCase().includes(needle)) : items).slice(0, 50);
+  const active = Math.min(index, Math.max(results.length - 1, 0));
+
+  const onKeyDown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setIndex(Math.min(active + 1, results.length - 1));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setIndex(Math.max(active - 1, 0));
+    } else if (event.key === "Enter" && results[active]) {
+      event.preventDefault();
+      onPick(results[active]);
+    }
+  };
+
+  return html`
+    <div className="palette-backdrop" onClick=${onClose}>
+      <div className="palette" role="dialog" aria-label="Jump to" onClick=${(event) => event.stopPropagation()}>
+        <input
+          autoFocus
+          className="palette-input"
+          placeholder="Jump to a project or release…"
+          value=${query}
+          onInput=${(event) => { setQuery(event.target.value); setIndex(0); }}
+          onKeyDown=${onKeyDown}
+        />
+        <ul className="palette-list">
+          ${results.map(
+            (item, position) => html`
+              <li key=${item.key}>
+                <button
+                  type="button"
+                  className=${`palette-item ${position === active ? "active" : ""}`}
+                  onMouseEnter=${() => setIndex(position)}
+                  onClick=${() => onPick(item)}
+                >
+                  <span>${item.label}</span>
+                  <span className="help-text">${item.kind}</span>
+                </button>
+              </li>
+            `
+          )}
+          ${results.length ? null : html`<li className="help-text palette-empty">No matches.</li>`}
+        </ul>
+      </div>
+    </div>
+  `;
+}
+
 function App() {
   const [projects, setProjects] = useState([]);
+  // Session-only UI state (decisions 2 and 5): never written to storage.
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 820);
+  const [sidebarReleases, setSidebarReleases] = useState([]);
+  const [releasesVersion, setReleasesVersion] = useState(0);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
-  // null until a release is chosen: a workspace opens on its release list first.
+  // null until a release is chosen: a project workspace opens on its release list first.
   const [selectedReleaseId, setSelectedReleaseId] = useState(null);
   const [dashboard, setDashboard] = useState(null);
 
-  const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [convertTarget, setConvertTarget] = useState(null);
   const [csvFile, setCsvFile] = useState(null);
 
@@ -5405,10 +5626,56 @@ function App() {
     return data;
   };
 
-  const refreshWorkspace = async () => {
+  const bumpReleases = () => setReleasesVersion((value) => value + 1);
+
+  // Sidebar release list for the open workspace; reloaded whenever releases change.
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setSidebarReleases([]);
+      return undefined;
+    }
+    let stale = false;
+    api(`/api/projects/${selectedProjectId}/releases`)
+      .then((data) => {
+        if (stale) return;
+        setSidebarReleases(data);
+      })
+      .catch(() => {});
+    return () => { stale = true; };
+  }, [selectedProjectId, releasesVersion]);
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const paletteItems = [
+    { key: "dash", kind: "Dashboard", label: "Dashboard", path: "/" },
+    ...projects.map((project) => ({
+      key: `p${project.id}`,
+      kind: "Project",
+      label: project.name,
+      path: projectWorkspacePath(project.id),
+    })),
+    ...sidebarReleases.map((release) => ({
+      key: `r${release.id}`,
+      kind: "Release",
+      label: release.name,
+      path: releasePath(selectedProjectId, release.id),
+    })),
+  ];
+
+  const refreshProject = async () => {
     if (!selectedProjectId) {
       return;
     }
+    bumpReleases();
     await Promise.all([
       loadProjects(),
       selectedReleaseId ? loadDashboard(selectedProjectId, selectedReleaseId) : null,
@@ -5420,6 +5687,7 @@ function App() {
       setLoading(true);
       try {
         await loadProjects();
+        await applyRoute(parseRoute());
       } catch (error) {
         notify(error.message, "error");
       } finally {
@@ -5428,46 +5696,60 @@ function App() {
     })();
   }, []);
 
-  const goToPortfolio = () => {
-    setSelectedProjectId(null);
-    setSelectedReleaseId(null);
-    setDashboard(null);
-  };
+  // Routing: the URL hash is the source of truth (#/w/:id, #/w/:id/r/:releaseId).
+  // Handlers only change the hash; applyRoute mirrors it into state. Hash routing
+  // needs no server change and gives links, refresh and back/forward for free.
+  const routeSeq = useRef(0);
 
-  const goToWorkspace = () => {
-    setSelectedReleaseId(null);
-    setDashboard(null);
-  };
-
-  const handleProjectDeleted = async () => {
-    goToPortfolio();
-    await loadProjects();
-  };
-
-  const openProject = (projectId) => {
-    setSelectedProjectId(projectId);
-    setSelectedReleaseId(null);
-    setDashboard(null);
-  };
-
-  const openRelease = async (releaseId, projectId = selectedProjectId) => {
+  const applyRoute = async (route) => {
+    routeSeq.current += 1;
+    const seq = routeSeq.current;
+    setSelectedProjectId(route.projectId);
+    if (!route.projectId || !route.releaseId) {
+      setSelectedReleaseId(null);
+      setDashboard(null);
+      return;
+    }
     setLoading(true);
     try {
-      await loadDashboard(projectId, releaseId);
-      setSelectedReleaseId(releaseId);
+      const data = await api(`/api/projects/${route.projectId}/dashboard?release_id=${route.releaseId}`);
+      if (seq !== routeSeq.current) return;
+      setDashboard(data);
+      setSelectedReleaseId(route.releaseId);
     } catch (error) {
+      if (seq !== routeSeq.current) return;
       notify(error.message, "error");
+      setSelectedReleaseId(null);
+      setDashboard(null);
+      navigate(projectWorkspacePath(route.projectId), true);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleReleaseDeleted = async () => {
-    goToWorkspace();
+  useEffect(() => {
+    const onHashChange = () => applyRoute(parseRoute());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  const handleProjectDeleted = async () => {
+    navigate("/");
     await loadProjects();
   };
 
-  // Resolves true when the workspace was created, so the drawer stays open (with
+  const openProject = (projectId) => navigate(projectWorkspacePath(projectId));
+
+  const openRelease = (releaseId, projectId = selectedProjectId) =>
+    navigate(releasePath(projectId, releaseId));
+
+  const handleReleaseDeleted = async () => {
+    navigate(projectWorkspacePath(selectedProjectId));
+    bumpReleases();
+    await loadProjects();
+  };
+
+  // Resolves true when the project was created, so the drawer stays open (with
   // the typed values) on failure.
   const handleCreateProject = async (payload) => {
     setSubmitting(true);
@@ -5477,8 +5759,8 @@ function App() {
         body: JSON.stringify(payload),
       });
       await loadProjects();
-      setNewWorkspaceOpen(false);
-      notify("Workspace created.", "success");
+      setNewProjectOpen(false);
+      notify("Project created.", "success");
       openProject(project.id);
       return true;
     } catch (error) {
@@ -5496,7 +5778,7 @@ function App() {
     try {
       await api(path, payload === null ? { method } : { method, body: JSON.stringify(payload) });
       notify(message, "success");
-      await refreshWorkspace();
+      await refreshProject();
       return true;
     } catch (error) {
       notify(error.message, "error");
@@ -5569,7 +5851,7 @@ function App() {
           (result.errors.length ? `. ${result.errors.length} warning(s) logged.` : "."),
         result.errors.length ? "error" : "success"
       );
-      await refreshWorkspace();
+      await refreshProject();
     } catch (error) {
       notify(error.message, "error");
     } finally {
@@ -5578,7 +5860,7 @@ function App() {
   };
 
   if (loading && !selectedProjectId) {
-    return html`<${LoadingShell} copy="Loading project portfolio" />`;
+    return html`<${LoadingShell} copy="Loading dashboard" />`;
   }
 
   return html`
@@ -5594,11 +5876,32 @@ function App() {
             >${toast.text}</div>
           `
         : null}
+      <div className=${`shell-layout ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
+      ${sidebarOpen
+        ? html`<${AppSidebar}
+            projects=${projects}
+            selectedProjectId=${selectedProjectId}
+            selectedReleaseId=${selectedReleaseId}
+            releases=${sidebarReleases}
+            onOpenProject=${(id) => { openProject(id); if (window.innerWidth <= 820) setSidebarOpen(false); }}
+            onOpenRelease=${(id, projectId) => { openRelease(id, projectId); if (window.innerWidth <= 820) setSidebarOpen(false); }}
+            onGoDashboard=${() => navigate("/")}
+            onCollapse=${() => setSidebarOpen(false)}
+          />`
+        : html`<button
+            type="button"
+            className="sidebar-expand"
+            onClick=${() => setSidebarOpen(true)}
+            aria-label="Open sidebar"
+            title="Open sidebar"
+          >»</button>`}
+      <main className="shell-main">
       ${selectedProjectId && selectedReleaseId && dashboard
         ? html`
-            <${WorkspaceView}
+            <${ReleaseOverviewView}
               dashboard=${dashboard}
-              onBack=${goToWorkspace}
+              onBack=${() => navigate(projectWorkspacePath(selectedProjectId))}
+              onDashboard=${() => navigate("/")}
               onSwitchRelease=${openRelease}
               onReleaseDeleted=${handleReleaseDeleted}
               csvFile=${csvFile}
@@ -5607,32 +5910,42 @@ function App() {
               deliverableActions=${deliverableActions}
               milestoneActions=${milestoneActions}
               onNotify=${notify}
-              onWorkspaceRefresh=${refreshWorkspace}
+              onProjectRefresh=${refreshProject}
               submitting=${submitting}
             />
           `
         : selectedProjectId && projects.some((item) => item.id === selectedProjectId)
           ? html`
-              <${WorkspaceHomeView}
+              <${ProjectWorkspaceView}
                 project=${projects.find((item) => item.id === selectedProjectId)}
-                onBack=${goToPortfolio}
+                onBack=${() => navigate("/")}
                 onOpenRelease=${openRelease}
                 onNotify=${notify}
                 onProjectChanged=${loadProjects}
                 onProjectDeleted=${handleProjectDeleted}
+                onReleasesChanged=${bumpReleases}
               />
             `
           : html`
-              <${LandingView}
+              <${DashboardView}
                 projects=${projects}
                 onOpenProject=${openProject}
-                onNewWorkspace=${() => setNewWorkspaceOpen(true)}
+                onNewProject=${() => setNewProjectOpen(true)}
                 onConvert=${setConvertTarget}
               />
             `}
-      ${newWorkspaceOpen
-        ? html`<${NewWorkspaceDrawer}
-            onClose=${() => setNewWorkspaceOpen(false)}
+      </main>
+      </div>
+      ${paletteOpen
+        ? html`<${CommandPalette}
+            items=${paletteItems}
+            onClose=${() => setPaletteOpen(false)}
+            onPick=${(item) => { setPaletteOpen(false); navigate(item.path); }}
+          />`
+        : null}
+      ${newProjectOpen
+        ? html`<${NewProjectDrawer}
+            onClose=${() => setNewProjectOpen(false)}
             onCreate=${handleCreateProject}
             submitting=${submitting}
           />`

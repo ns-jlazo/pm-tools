@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy import (
@@ -54,6 +54,11 @@ class Project(Base):
     # Legacy single release date, kept only so the release migration can seed the
     # first Release from it. The UI reads Release.release_date instead.
     release_date: Mapped[Optional[Date]] = mapped_column(Date)
+    # UTC creation time. Rows that predate the column were backfilled with the
+    # moment the migration ran (see `_migrate_created_at`).
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
+    )
     # "active" or "inactive" — inactive workspaces are projects no longer under way.
     status: Mapped[str] = mapped_column(
         String(20), default="active", nullable=False, server_default=text("'active'")

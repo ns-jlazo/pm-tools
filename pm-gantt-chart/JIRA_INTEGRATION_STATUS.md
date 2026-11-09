@@ -42,7 +42,7 @@ Read-only Jira integration for the pm-gantt-chart UI, letting users link Jira **
   - [x] `JiraProjectPanel` — linked epics grouped by team (with `null` bucket for Unassigned), status pills, per-row Unlink, panel-wide Refresh.
   - [x] `JiraEpicChildren` — on-demand collapsible sidebar hitting `/api/jira/issues/{epic}/children`.
   - [x] `JiraDeliverableLinks` — chip strip under the Update-deliverable form and inside the Gantt inline popover; per-deliverable Link/Unlink modal.
-  - [x] `WorkspaceView` extended with the Jira panel and `onNotify` bridge to the shared status banner.
+  - [x] `ReleaseOverviewView` extended with the Jira panel and `onNotify` bridge to the shared status banner.
 - [x] `static/styles.css` — `.jira-panel`, `.jira-status-pill` (todo/in-progress/done color coding), `.jira-modal*`, `.jira-chip*`, `.jira-children*`.
 - [x] `static/index.html` — cache-busting bumped to `?v=20260812`.
 
@@ -105,7 +105,7 @@ made every Jira lookup (e.g. `SNA-28969`) fail, plus one blind spot:
   refetches). Anything in Jira's `done` category is hidden by default; explicit
   choices persist per project in `localStorage` under
   `pm-tool.jira-status-filter.<projectId>`. New `JiraStatusFilter` chip row, shared
-  `useJiraStatusFilter` state in `WorkspaceView`. `GET
+  `useJiraStatusFilter` state in `ReleaseOverviewView`. `GET
   /api/jira/issues/{epic_key}/children` default `limit` raised 50 → 200 so a busy
   epic isn't truncated before filtering.
 - [x] **Link stories from every deliverable surface.** `JiraPickerModal` gained a
@@ -136,7 +136,7 @@ made every Jira lookup (e.g. `SNA-28969`) fail, plus one blind spot:
   columns, so the `ALTER TABLE` is explicit; the column check gates the backfill, so
   a workspace demoted later in the UI is never re-promoted. `seed_data()` creates the
   default workspaces with `is_example=True`.
-- [x] **Split landing sections.** `LandingView` partitions on `is_example` into
+- [x] **Split landing sections.** `DashboardView` partitions on `is_example` into
   "Active project workspaces" (with a `No real workspaces yet` empty state) and
   "Example workspaces". Card markup extracted into a `ProjectCard` component; example
   cards get a dashed border and an `Example` pill. The flag is set in the
