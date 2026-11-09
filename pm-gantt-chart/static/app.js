@@ -1756,17 +1756,17 @@ function JiraProjectPanel({
             aria-expanded=${addOpen}
             onClick=${() => setAddOpen(!addOpen)}
           >${addOpen ? "Cancel" : "+ Add team"}</button>
+          <button className="button-primary" type="button" onClick=${() => { setPickerError(""); setShowPicker(true); }}>
+            Link epic
+          </button>
           <button
-            className="button-secondary"
+            className="button-secondary jira-refresh-btn"
             type="button"
             onClick=${forceSync}
             disabled=${loading || checkingLabels}
             title="Re-sync linked epics and look for new stories under each deliverable's label. Nothing is linked automatically."
           >
             ${loading || checkingLabels ? "Refreshing…" : "Refresh data"}
-          </button>
-          <button className="button-primary" type="button" onClick=${() => { setPickerError(""); setShowPicker(true); }}>
-            Link epic
           </button>
         </div>
       </div>
@@ -2269,7 +2269,6 @@ function milestonePayload(form) {
     target_date: form.target_date,
     actual_date: form.actual_date || null,
     status: form.status,
-    progress: Number(form.progress),
   };
 }
 
@@ -2423,12 +2422,23 @@ function ProjectCard({ project, onOpenProject, onConvert }) {
   `;
 }
 
-function ProjectSection({ title, copy, projects, total, emptyText, onOpenProject, onConvert, className }) {
+function ProjectSection({ title, category, onShowCategory, copy, projects, total, emptyText, onOpenProject, onConvert, className }) {
+  const count = total ?? projects.length;
   return html`
     <section className=${`project-section ${className || ""}`}>
       <div className="project-section-heading">
-        <h2>${title}</h2>
-        <span className="tiny-pill">${total ?? projects.length}</span>
+        ${category && onShowCategory
+          ? html`<button
+              type="button"
+              className="section-heading-link"
+              aria-label=${`Show ${count} ${category} projects in sidebar`}
+              title="Show in sidebar"
+              onClick=${() => onShowCategory(category)}
+            >
+              <h2>${title}</h2>
+              <span className="tiny-pill">${count}</span>
+            </button>`
+          : html`<h2>${title}</h2><span className="tiny-pill">${count}</span>`}
       </div>
       <p className="panel-copy">${copy}</p>
       ${projects.length
@@ -2464,19 +2474,24 @@ function groupProjects(projects) {
   };
 }
 
-const DASHBOARD_PROJECTS_PER_GROUP = 4;
+const DASHBOARD_PROJECTS_PER_GROUP = 3;
 
 // The few projects whose next release is coming up soonest (today or later).
-// Projects with no upcoming release date are left out of the dashboard lists.
+// Projects with no upcoming release date (e.g. a just-converted example) follow
+// the dated ones, newest first, so an active project is never silently hidden.
 function soonestByRelease(projects, limit = DASHBOARD_PROJECTS_PER_GROUP) {
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
     now.getDate()
   ).padStart(2, "0")}`;
-  return projects
+  const dated = projects
     .filter((project) => project.next_release_date && project.next_release_date >= today)
-    .sort((a, b) => a.next_release_date.localeCompare(b.next_release_date))
-    .slice(0, limit);
+    .sort((a, b) => a.next_release_date.localeCompare(b.next_release_date));
+  const undated = mostRecentlyCreated(
+    projects.filter((project) => !(project.next_release_date && project.next_release_date >= today)),
+    limit
+  );
+  return [...dated, ...undated].slice(0, limit);
 }
 
 // The few most recently created projects. Example projects have no release dates
@@ -2486,11 +2501,11 @@ function mostRecentlyCreated(projects, limit = DASHBOARD_PROJECTS_PER_GROUP) {
   return [...projects].sort((a, b) => stamp(b) - stamp(a) || b.id - a.id).slice(0, limit);
 }
 
-function alphabetical(projects) {
-  return [...projects].sort((a, b) => a.name.localeCompare(b.name));
+function alphabetical(projects, limit = DASHBOARD_PROJECTS_PER_GROUP) {
+  return [...projects].sort((a, b) => a.name.localeCompare(b.name)).slice(0, limit);
 }
 
-function DashboardView({ projects, onOpenProject, onNewProject, onConvert }) {
+function DashboardView({ projects, onOpenProject, onNewProject, onConvert, onShowCategory }) {
   const grouped = groupProjects(projects);
   const activeProjects = soonestByRelease(grouped.activeProjects);
   const exampleProjects = mostRecentlyCreated(grouped.exampleProjects);
@@ -2513,7 +2528,9 @@ function DashboardView({ projects, onOpenProject, onNewProject, onConvert }) {
 
       <${ProjectSection}
         title="Active projects"
-        copy="Projects tracking real delivery work — the 3 with the nearest upcoming release."
+        category="Active"
+        onShowCategory=${onShowCategory}
+        copy=${`Projects tracking real delivery work — showing ${DASHBOARD_PROJECTS_PER_GROUP}, nearest upcoming release first, then most recently created.`}
         total=${grouped.activeProjects.length}
         projects=${activeProjects}
         emptyText="No active projects yet — use “+ New Project” to create one."
@@ -2521,38 +2538,33 @@ function DashboardView({ projects, onOpenProject, onNewProject, onConvert }) {
         onConvert=${onConvert}
       />
 
+      ${grouped.inactiveProjects.length
+        ? html`<${ProjectSection}
+            title="Inactive projects"
+            category="Inactive"
+            onShowCategory=${onShowCategory}
+            total=${grouped.inactiveProjects.length}
+            copy=${`Projects no longer under way. Showing the first ${DASHBOARD_PROJECTS_PER_GROUP} alphabetically. Set one back to active in its settings.`}
+            projects=${inactiveProjects}
+            onOpenProject=${onOpenProject}
+            onConvert=${onConvert}
+          />`
+        : null}
+
       ${grouped.exampleProjects.length
         ? html`<${ProjectSection}
             className="examples"
             title="Example projects"
+            category="Example"
+            onShowCategory=${onShowCategory}
             total=${grouped.exampleProjects.length}
-            copy="Reference layouts for guidance — safe to experiment in. Showing the 3 most recently created. Use “Make active” to start real work in one."
+            copy=${`Reference layouts for guidance — safe to experiment in. Showing the ${DASHBOARD_PROJECTS_PER_GROUP} most recently created. Use “Make active” to start real work in one.`}
             projects=${exampleProjects}
             onOpenProject=${onOpenProject}
             onConvert=${onConvert}
           />`
         : null}
 
-      ${grouped.inactiveProjects.length
-        ? html`
-            <details className="inactive-group">
-              <summary>
-                Inactive projects <span className="tiny-pill">${grouped.inactiveProjects.length}</span>
-              </summary>
-              <p className="panel-copy">Projects no longer under way. Still viewable; set one back to active in its settings.</p>
-              <div className="project-grid">
-                ${inactiveProjects.map(
-                  (project) => html`<${ProjectCard}
-                    key=${project.id}
-                    project=${project}
-                    onOpenProject=${onOpenProject}
-                    onConvert=${onConvert}
-                  />`
-                )}
-              </div>
-            </details>
-          `
-        : null}
     </div>
   `;
 }
@@ -2732,13 +2744,13 @@ function ConvertExampleDrawer({ project, onClose, onNotify, onDone }) {
 
 // Read-only progress for a deliverable. The server derives it from the share of
 // linked stories that are done (epics never count), so this only displays it.
-function DeliverableProgress({ deliverableId, fallback = 0, htmlId }) {
+function DeliverableProgress({ deliverableId, fallback = 0, htmlId, scope = "deliverables" }) {
   const [stats, setStats] = useState(null);
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const links = await api(`/api/deliverables/${deliverableId}/jira`);
+        const links = await api(`/api/${scope}/${deliverableId}/jira`);
         if (cancelled) return;
         const stories = links.filter((link) => !isEpicIssue(link.issue));
         const done = stories.filter(
@@ -2758,7 +2770,7 @@ function DeliverableProgress({ deliverableId, fallback = 0, htmlId }) {
       cancelled = true;
       window.removeEventListener("work-item-links-changed", onChange);
     };
-  }, [deliverableId]);
+  }, [deliverableId, scope]);
   const percent = stats
     ? stats.total ? Math.round((stats.done / stats.total) * 100) : 0
     : Number(fallback) || 0;
@@ -3223,8 +3235,7 @@ function MilestoneForm({
       const key = (raw || "").trim().toUpperCase();
       if (key && !next.includes(key)) next.push(key);
     }
-    const seeded = progress === null || progress === undefined ? {} : { progress };
-    setForm({ ...form, jira_keys: next, ...seeded });
+    setForm({ ...form, jira_keys: next });
     setShowPicker(false);
   };
   const removePendingJira = (key) => {
@@ -3245,9 +3256,6 @@ function MilestoneForm({
             <option value="">Select a team</option>
             ${teams.map((team) => html`<option key=${team.id} value=${team.id}>${team.name}</option>`)}
           </select>
-          <span className="help-text">
-            Any team on the project can own a milestone, not just the deliverable's own team.
-          </span>
         </div>
 
         <div className="field">
@@ -3278,30 +3286,21 @@ function MilestoneForm({
             value=${form.actual_date}
             onInput=${handleField("actual_date")}
           />
-          <span className="help-text">
-            Leave empty while it is still open — an actual date after the target counts as a slip.
-          </span>
         </div>
 
-        <div className="field">
-          <label htmlFor=${fieldId("progress")}>Progress %</label>
-          <input
-            id=${fieldId("progress")}
-            type="number"
-            min="0"
-            max="100"
-            value=${form.progress}
-            onInput=${handleField("progress")}
-          />
-          ${milestoneId
-            ? html`<${RecalcProgressButton}
-                scope="milestones"
-                itemId=${milestoneId}
-                onProgress=${(value) => setForm((current) => ({ ...current, progress: value }))}
-                onMessage=${onMessage}
-              />`
-            : null}
-        </div>
+        ${milestoneId
+          ? html`
+              <div className="field">
+                <label htmlFor=${fieldId("progress")}>Progress</label>
+                <${DeliverableProgress}
+                  scope="milestones"
+                  htmlId=${fieldId("progress")}
+                  deliverableId=${milestoneId}
+                  fallback=${form.progress}
+                />
+              </div>
+            `
+          : null}
 
         <div className="field-wide">
           <label htmlFor=${fieldId("description")}>Description</label>
@@ -3456,16 +3455,22 @@ function DeliverableRosterPanel({
     editor && (editor.kind === "deliverable-create" || editor.kind === "deliverable-edit");
   const deliverableDirty =
     Boolean(isDeliverableEditor) && draftSnapshot(deliverableDraft) !== baselineRef.current;
+  const milestoneBaselineRef = useRef("");
+  const isMilestoneEditor =
+    editor && (editor.kind === "milestone-create" || editor.kind === "milestone-edit");
+  const milestoneDirty =
+    Boolean(isMilestoneEditor) && draftSnapshot(milestoneDraft) !== milestoneBaselineRef.current;
+  const editorDirty = deliverableDirty || milestoneDirty;
   // Close from the x, backdrop, Esc or Cancel: nothing is saved, and edits need
   // an explicit OK to throw away.
   const requestCloseEditor = () => {
-    if (deliverableDirty && !window.confirm(UNSAVED_MESSAGE)) return;
+    if (editorDirty && !window.confirm(UNSAVED_MESSAGE)) return;
     closeEditor();
   };
   useEffect(() => {
-    unsavedGuard.dirty = deliverableDirty;
-    unsavedGuard.discard = deliverableDirty ? () => setEditor(null) : null;
-    if (!deliverableDirty) return undefined;
+    unsavedGuard.dirty = editorDirty;
+    unsavedGuard.discard = editorDirty ? () => setEditor(null) : null;
+    if (!editorDirty) return undefined;
     const onBeforeUnload = (event) => {
       event.preventDefault();
       event.returnValue = "";
@@ -3476,7 +3481,7 @@ function DeliverableRosterPanel({
       unsavedGuard.dirty = false;
       unsavedGuard.discard = null;
     };
-  }, [deliverableDirty]);
+  }, [editorDirty]);
   const toggle = (deliverableId) =>
     setExpanded((current) => ({ ...current, [deliverableId]: !current[deliverableId] }));
 
@@ -3509,13 +3514,16 @@ function DeliverableRosterPanel({
   // The new milestone inherits its parent's team as a starting point; any team on
   // the project can own it.
   const openMilestoneCreate = (deliverable) => {
-    setMilestoneDraft({ ...DEFAULT_MILESTONE, team_id: String(deliverable.team_id) });
+    const initial = { ...DEFAULT_MILESTONE, team_id: String(deliverable.team_id) };
+    setMilestoneDraft(initial);
+    milestoneBaselineRef.current = draftSnapshot(initial);
     setEditor({ kind: "milestone-create", deliverableId: deliverable.id });
     setExpanded((current) => ({ ...current, [deliverable.id]: true }));
   };
 
   const openMilestoneEdit = (deliverable, milestone) => {
     setMilestoneDraft(milestoneToForm(milestone));
+    milestoneBaselineRef.current = draftSnapshot(milestoneToForm(milestone));
     setEditor({ kind: "milestone-edit", id: milestone.id, deliverableId: deliverable.id });
   };
 
@@ -3807,7 +3815,7 @@ function DeliverableRosterPanel({
               form=${milestoneDraft}
               setForm=${setMilestoneDraft}
               onSave=${submitMilestoneCreate}
-              onCancel=${closeEditor}
+              onCancel=${requestCloseEditor}
               submitting=${submitting}
               onMessage=${onMessage}
               epicKeys=${epicKeys}
@@ -3826,7 +3834,7 @@ function DeliverableRosterPanel({
               form=${milestoneDraft}
               setForm=${setMilestoneDraft}
               onSave=${submitMilestoneEdit}
-              onCancel=${closeEditor}
+              onCancel=${requestCloseEditor}
               submitting=${submitting}
               onMessage=${onMessage}
               epicKeys=${epicKeys}
@@ -3947,7 +3955,7 @@ function MilestoneEditorModal({
       title=${creating ? `New milestone in “${parentTitle}”` : `Milestone: ${milestone.title}`}
       subtitle=${creating
         ? "A milestone is one dated piece of this deliverable, and any team on the project can own it."
-        : `Part of ${parentTitle || "its deliverable"} — a slip here raises that deliverable's risk, but its progress % stays its own.`}
+        : `Part of ${parentTitle || "its deliverable"} — a slip here raises that deliverable's risk. Progress is calculated from its linked Jira stories.`}
       onClose=${onCancel}
     >
         <${MilestoneForm}
@@ -3973,8 +3981,6 @@ function MilestoneEditorModal({
                 onMessage=${onMessage}
                 epicKeys=${epicKeys}
                 statusFilter=${statusFilter}
-                onProgressSuggested=${(value) =>
-                  setForm((current) => ({ ...current, progress: value }))}
                 teams=${teams}
                 epicTeams=${epicTeams}
                 compact=${true}
@@ -4049,6 +4055,15 @@ function DeliverableEditorModal({
           onMessage=${onMessage}
           projectId=${projectId}
         />
+        <div className="actions">
+          <button
+            className="button-primary"
+            type="submit"
+            form="deliverable-form"
+            disabled=${submitting}
+            aria-busy=${submitting}
+          >${creating ? "Create deliverable" : "Save deliverable"}</button>
+        </div>
         ${creating
           ? null
           : html`
@@ -4072,15 +4087,6 @@ function DeliverableEditorModal({
                 }}
               />
             `}
-        <div className="actions">
-          <button
-            className="button-primary"
-            type="submit"
-            form="deliverable-form"
-            disabled=${submitting}
-            aria-busy=${submitting}
-          >${creating ? "Create deliverable" : "Save deliverable"}</button>
-        </div>
     <//>
   `;
 }
@@ -4229,7 +4235,12 @@ function GanttRow({
     ? "linear-gradient(120deg, #b91c1c, #dc2626)"
     : deliverable.at_risk
       ? "linear-gradient(120deg, #b45309, #ea580c)"
-      : `linear-gradient(120deg, ${deliverable.team_color}, #0f172a)`;
+      : "linear-gradient(120deg, #166534, #15803d)";
+  const statusClass = deliverable.delayed
+    ? "status-red"
+    : deliverable.at_risk
+      ? "status-amber"
+      : "status-green";
   const milestones = deliverable.milestones || [];
 
   return html`
@@ -4289,7 +4300,7 @@ function GanttRow({
       <div className="timeline-grid">
         <button
           ref=${(node) => { if (node) { barRefs.current[deliverable.id] = node; } }}
-          className=${`task-bar ${deliverable.risk_level} ${isEditing ? "editing" : ""}`}
+          className=${`task-bar ${statusClass} ${isEditing ? "editing" : ""}`}
           style=${{ left: `${left}%`, width: `${width}%`, background: gradient }}
           title=${deliverable.risk_reasons.join(" | ") || "On track"}
           onClick=${() => onOpenInline(deliverable)}
@@ -4332,6 +4343,8 @@ function GanttChart({
 }) {
   const barRefs = useRef({});
   const bodyRef = useRef(null);
+  const shellRef = useRef(null);
+  const [exporting, setExporting] = useState(false);
   const [lines, setLines] = useState([]);
   const [editingDeliverableId, setEditingDeliverableId] = useState("");
   const [inlineForm, setInlineForm] = useState({ status: "planned", progress: 0, current_start: "", current_end: "" });
@@ -4534,9 +4547,62 @@ function GanttChart({
     return null;
   }, [deliverables, editingMilestoneId]);
 
+  // Downloads the whole chart as an image. The board scrolls sideways, so it is
+  // expanded to its full width for the capture and restored afterwards.
+  const exportImage = async (format) => {
+    const shell = shellRef.current;
+    const board = shell && shell.querySelector(".gantt-board");
+    if (!shell || !board || exporting) return;
+    setExporting(true);
+    const saved = {
+      shellOverflow: shell.style.overflow,
+      shellWidth: shell.style.width,
+      boardOverflow: board.style.overflow,
+    };
+    try {
+      const lib = await import("https://esm.sh/html-to-image@1.11.11");
+      const width = shell.scrollWidth - board.clientWidth + board.scrollWidth;
+      shell.style.overflow = "visible";
+      shell.style.width = `${width}px`;
+      board.style.overflow = "visible";
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const options = {
+        pixelRatio: 2,
+        backgroundColor: "#ffffff",
+        width: shell.scrollWidth,
+        height: shell.scrollHeight,
+        quality: 0.92,
+        filter: (node) => !(node.dataset && node.dataset.exportIgnore),
+      };
+      const dataUrl = format === "jpeg" ? await lib.toJpeg(shell, options) : await lib.toPng(shell, options);
+      const link = document.createElement("a");
+      link.href = dataUrl;
+      link.download = `gantt-chart-${new Date().toISOString().slice(0, 10)}.${format === "jpeg" ? "jpg" : "png"}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      if (onMessage) onMessage(`Gantt chart exported as ${format.toUpperCase()}.`, "success");
+    } catch (error) {
+      console.error("Gantt export failed", error);
+      if (onMessage) onMessage("Could not export the Gantt chart image.", "error");
+    } finally {
+      shell.style.overflow = saved.shellOverflow;
+      shell.style.width = saved.shellWidth;
+      board.style.overflow = saved.boardOverflow;
+      setExporting(false);
+    }
+  };
+
+  const timelineMilestoneBaselineRef = useRef("");
   const openMilestone = (milestone) => {
     setEditingMilestoneId(String(milestone.id));
     setMilestoneForm(milestoneToForm(milestone));
+    timelineMilestoneBaselineRef.current = draftSnapshot(milestoneToForm(milestone));
+  };
+  const requestCloseMilestone = () => {
+    const dirty = draftSnapshot(milestoneForm) !== timelineMilestoneBaselineRef.current;
+    if (dirty && !window.confirm(UNSAVED_MESSAGE)) return;
+    setEditingMilestoneId("");
   };
 
   const saveMilestone = (event) => {
@@ -4547,7 +4613,7 @@ function GanttChart({
   };
 
   return html`
-    <section className="gantt-shell">
+    <section className="gantt-shell" ref=${shellRef}>
       <div className="gantt-toolbar">
         <div>
           <h2>Timeline overview</h2>
@@ -4560,17 +4626,24 @@ function GanttChart({
                 </span>`
               : null}
           </p>
+          <div className="risk-key">
+            <div className="legend-pill"><span className="legend-swatch" style=${{ background: "#166534" }}></span>No risk</div>
+            <div className="legend-pill"><span className="legend-swatch" style=${{ background: "#b45309" }}></span>Dependency pressure</div>
+            <div className="legend-pill"><span className="legend-swatch" style=${{ background: "#b91c1c" }}></span>Date slipped</div>
+          </div>
         </div>
-        <div className="risk-key">
-          <div className="legend-pill"><span className="legend-swatch" style=${{ background: "#166534" }}></span>No risk</div>
-          <div className="legend-pill"><span className="legend-swatch" style=${{ background: "#b45309" }}></span>Dependency pressure</div>
-          <div className="legend-pill"><span className="legend-swatch" style=${{ background: "#b91c1c" }}></span>Date slipped</div>
+        <div className="gantt-toolbar-side">
+          <div className="gantt-export" data-export-ignore="true">
+            <span className="gantt-export-label">Export image</span>
+            <button type="button" className="button-secondary" disabled=${exporting} onClick=${() => exportImage("png")}>PNG</button>
+            <button type="button" className="button-secondary" disabled=${exporting} onClick=${() => exportImage("jpeg")}>JPEG</button>
+          </div>
         </div>
       </div>
 
       <div className="gantt-board" style=${boardStyle}>
         <div className="gantt-header">
-          <div className="task-cell"><strong>Deliverable</strong></div>
+          <div className="task-cell"></div>
           <div className="timeline-header">
             ${timeline.months.map(
               (month) => html`
@@ -4626,6 +4699,7 @@ function GanttChart({
           : null}
 
         <div className="gantt-body" ref=${bodyRef}>
+          <div className="deliverable-heading">Deliverable</div>
           <svg className="dependency-layer">
             ${lines.map(
               (line) => html`
@@ -4722,7 +4796,7 @@ function GanttChart({
               form=${milestoneForm}
               setForm=${setMilestoneForm}
               onSave=${saveMilestone}
-              onCancel=${() => setEditingMilestoneId("")}
+              onCancel=${requestCloseMilestone}
               submitting=${submitting}
               onMessage=${onMessage}
               epicKeys=${epicKeys}
@@ -5327,7 +5401,6 @@ function ProjectWorkspaceView({ project, onBack, onOpenRelease, onNotify, onProj
                           onClick=${() => onOpenRelease(release.id)}
                         >
                           <td className="release-cell-name">
-                            <span className="project-dot" aria-hidden="true"></span>
                             <strong>${release.name}</strong>
                           </td>
                           <td className="release-cell-date">
@@ -5643,14 +5716,40 @@ function navigate(path, replace = false) {
 function AppSidebar({
   projects,
   selectedProjectId,
-  selectedReleaseId,
-  releases,
   onOpenProject,
-  onOpenRelease,
   onGoDashboard,
   onCollapse,
+  focusGroup,
+  onFocusHandled,
 }) {
   const [query, setQuery] = useState("");
+  // Session-only, like the rest of the sidebar state: titles of groups the user closed.
+  const [closedGroups, setClosedGroups] = useState(() => {
+    const all = ["Active", "Inactive", "Example"];
+    return new Set(focusGroup ? all.filter((title) => title !== focusGroup) : ["Inactive"]);
+  });
+  const navRef = useRef(null);
+  // A dashboard category was clicked: show only that group open, with no search filtering it.
+  useEffect(() => {
+    if (!focusGroup) return;
+    setQuery("");
+    setClosedGroups(new Set(["Active", "Inactive", "Example"].filter((title) => title !== focusGroup)));
+    const frame = requestAnimationFrame(() => {
+      navRef.current
+        ?.querySelector(`[data-group="${focusGroup}"]`)
+        ?.scrollIntoView({ block: "start" });
+      onFocusHandled?.();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusGroup]);
+  const toggleGroup = (title, open) =>
+    setClosedGroups((current) => {
+      if (current.has(title) === !open) return current;
+      const next = new Set(current);
+      if (open) next.delete(title);
+      else next.add(title);
+      return next;
+    });
   const needle = query.trim().toLowerCase();
   const matching = needle
     ? projects.filter((project) => project.name.toLowerCase().includes(needle))
@@ -5664,48 +5763,49 @@ function AppSidebar({
         <button
           type="button"
           className=${`sidebar-item ${current ? "current" : ""}`}
-          aria-current=${current && !selectedReleaseId ? "page" : undefined}
+          aria-current=${current ? "page" : undefined}
           onClick=${() => onOpenProject(project.id)}
         >
           <span className="project-dot" style=${{ "--project-color": project.color }}></span>
           <span className="sidebar-item-label">${project.name}</span>
         </button>
-        ${current && releases.length
-          ? html`
-              <ul className="sidebar-releases">
-                ${releases.map(
-                  (release) => html`
-                    <li key=${release.id}>
-                      <button
-                        type="button"
-                        className=${`sidebar-item sub ${release.id === selectedReleaseId ? "current" : ""}`}
-                        aria-current=${release.id === selectedReleaseId ? "page" : undefined}
-                        onClick=${() => onOpenRelease(release.id, project.id)}
-                      ><span className="sidebar-item-label">${release.name}</span></button>
-                    </li>
-                  `
-                )}
-              </ul>
-            `
-          : null}
       </li>
     `;
   };
 
+  // An active search keeps every group open so a match is never hidden.
   const renderGroup = (title, list) =>
     list.length
       ? html`
-          <div className="sidebar-group">
-            <div className="sidebar-group-title">${title}</div>
+          <details
+            className="sidebar-group"
+            data-group=${title}
+            open=${Boolean(needle) || !closedGroups.has(title)}
+            onToggle=${(event) => {
+              if (!needle) toggleGroup(title, event.currentTarget.open);
+            }}
+          >
+            <summary className="sidebar-group-title">${title} (${list.length})</summary>
             <ul>${list.map(renderProject)}</ul>
-          </div>
+          </details>
         `
       : null;
 
   return html`
     <aside className="app-sidebar" aria-label="Projects">
       <div className="sidebar-head">
-        <button type="button" className="sidebar-item" onClick=${onGoDashboard}>Dashboard</button>
+        <button
+          type="button"
+          className=${`sidebar-item sidebar-dashboard ${selectedProjectId ? "" : "current"}`}
+          aria-current=${selectedProjectId ? undefined : "page"}
+          onClick=${onGoDashboard}
+        >
+          <svg className="sidebar-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 10.5 12 3l9 7.5" />
+            <path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5" />
+          </svg>
+          <span className="sidebar-item-label">Dashboard</span>
+        </button>
         <button
           type="button"
           className="icon-button"
@@ -5722,17 +5822,10 @@ function AppSidebar({
         value=${query}
         onInput=${(event) => setQuery(event.target.value)}
       />
-      <nav className="sidebar-scroll">
+      <nav className="sidebar-scroll" ref=${navRef}>
         ${renderGroup("Active", activeProjects)}
+        ${renderGroup("Inactive", inactiveProjects)}
         ${renderGroup("Example", exampleProjects)}
-        ${inactiveProjects.length
-          ? html`
-              <details className="sidebar-group" open=${Boolean(needle) || inactiveProjects.some((p) => p.id === selectedProjectId)}>
-                <summary className="sidebar-group-title">Inactive (${inactiveProjects.length})</summary>
-                <ul>${inactiveProjects.map(renderProject)}</ul>
-              </details>
-            `
-          : null}
         ${matching.length ? null : html`<p className="help-text">No matching projects.</p>`}
       </nav>
     </aside>
@@ -5802,6 +5895,12 @@ function App() {
   const [projects, setProjects] = useState([]);
   // Session-only UI state (decisions 2 and 5): never written to storage.
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 820);
+  // Category ("Active" | "Inactive" | "Example") the dashboard asked the sidebar to show.
+  const [sidebarFocus, setSidebarFocus] = useState(null);
+  const showCategory = (category) => {
+    setSidebarFocus(category);
+    setSidebarOpen(true);
+  };
   const [sidebarReleases, setSidebarReleases] = useState([]);
   const [releasesVersion, setReleasesVersion] = useState(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -6141,12 +6240,11 @@ function App() {
         ? html`<${AppSidebar}
             projects=${projects}
             selectedProjectId=${selectedProjectId}
-            selectedReleaseId=${selectedReleaseId}
-            releases=${sidebarReleases}
             onOpenProject=${(id) => { openProject(id); if (window.innerWidth <= 820) setSidebarOpen(false); }}
-            onOpenRelease=${(id, projectId) => { openRelease(id, projectId); if (window.innerWidth <= 820) setSidebarOpen(false); }}
             onGoDashboard=${() => navigate("/")}
             onCollapse=${() => setSidebarOpen(false)}
+            focusGroup=${sidebarFocus}
+            onFocusHandled=${() => setSidebarFocus(null)}
           />`
         : html`<button
             type="button"
@@ -6192,6 +6290,7 @@ function App() {
                 onOpenProject=${openProject}
                 onNewProject=${() => setNewProjectOpen(true)}
                 onConvert=${setConvertTarget}
+                onShowCategory=${showCategory}
               />
             `}
       </main>

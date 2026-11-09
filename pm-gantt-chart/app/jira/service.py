@@ -14,7 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, object_session, selectinload
 
 from .. import models, schemas
-from ..services import recalc_deliverable_progress, recalc_progress_for_issue
+from ..services import (
+    recalc_deliverable_progress,
+    recalc_milestone_progress,
+    recalc_progress_for_issue,
+)
 from .auth import JiraNotConfigured, get_jira_credentials
 from .client import JiraClient
 
@@ -982,8 +986,11 @@ def _expand_epics(
 
 
 def _recalc_if_deliverable(db: Session, kind: "_LinkKind", owner_id: int) -> None:
+    # Name kept for its call sites; it now covers milestones too.
     if kind.link_model is models.DeliverableJiraLink:
         recalc_deliverable_progress(db, owner_id)
+    elif kind.link_model is models.MilestoneJiraLink:
+        recalc_milestone_progress(db, owner_id)
 
 
 def _link_one(

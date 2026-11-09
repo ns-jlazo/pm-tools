@@ -398,7 +398,7 @@ button {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  align-items: flex-end;
+  align-items: flex-start;
   margin-bottom: 16px;
 }
 
@@ -407,10 +407,29 @@ button {
   margin: 0;
 }
 
+.gantt-toolbar-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.gantt-export {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gantt-export-label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .risk-key {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  margin-top: 10px;
 }
 
 .legend-pill {
@@ -450,6 +469,27 @@ button {
 .release-band,
 .gantt-body {
   min-width: calc(var(--task-col) + var(--cols, 30) * var(--col-width, 34px));
+}
+
+/* Heading for the deliverable names column only; it does not take a row across the chart. */
+.deliverable-heading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--task-col);
+  box-sizing: border-box;
+  padding: 10px 16px 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.gantt-body > .gantt-row:not(.gantt-row ~ .gantt-row) .task-cell {
+  padding-top: 32px;
 }
 
 .task-cell {
@@ -599,11 +639,11 @@ button {
   box-shadow: 0 18px 32px rgba(15, 23, 42, 0.18);
 }
 
-.task-bar.high {
+.task-bar.status-red {
   outline: 3px solid rgba(185, 28, 28, 0.35);
 }
 
-.task-bar.medium {
+.task-bar.status-amber {
   outline: 3px solid rgba(180, 83, 9, 0.28);
 }
 
@@ -1089,7 +1129,7 @@ th {
 
 .project-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 16px;
   margin-bottom: 24px;
 }
@@ -1194,7 +1234,7 @@ th {
 
   .gantt-header,
   .release-band,
-  .gantt-row {
+    .gantt-row {
     grid-template-columns: 180px minmax(600px, 1fr);
   }
 }
@@ -1210,7 +1250,7 @@ th {
 
   .gantt-header,
   .release-band,
-  .gantt-row {
+    .gantt-row {
     grid-template-columns: 140px minmax(480px, 1fr);
   }
 }
@@ -1237,6 +1277,12 @@ th {
 .jira-panel-header .actions {
   display: flex;
   gap: 8px;
+  flex: 1 1 auto;
+  margin-top: 0;
+}
+
+.jira-panel-header .actions .jira-refresh-btn {
+  margin-left: auto;
 }
 
 .jira-team-group {
@@ -2041,6 +2087,30 @@ th {
   margin: 0;
 }
 
+.section-heading-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 6px;
+  margin: -2px -6px;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.section-heading-link:hover h2,
+.section-heading-link:hover {
+  text-decoration: underline;
+}
+
+.section-heading-link:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 .project-section .panel-copy {
   margin: 4px 0 14px;
 }
@@ -2302,24 +2372,6 @@ th {
   margin-left: 0;
 }
 
-.inactive-group {
-  margin-bottom: 24px;
-}
-
-.inactive-group > summary {
-  cursor: pointer;
-  font-weight: 700;
-  font-size: 1.1rem;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-
-.inactive-group > .panel-copy {
-  margin: 4px 0 14px;
-}
-
 /* ---------------- Segmented control ---------------- */
 
 .segmented {
@@ -2442,8 +2494,7 @@ th {
   flex: 1;
   overflow-y: auto;
 }
-.sidebar-scroll ul,
-.sidebar-releases {
+.sidebar-scroll ul {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -2458,7 +2509,30 @@ th {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
-  cursor: default;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.sidebar-group-title::-webkit-details-marker {
+  display: none;
+}
+.sidebar-group-title::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+.sidebar-group[open] > .sidebar-group-title::before {
+  transform: rotate(45deg);
+}
+.sidebar-group-title:hover {
+  color: var(--ink);
 }
 .sidebar-item {
   display: flex;
@@ -2480,10 +2554,6 @@ th {
 .sidebar-item.current {
   font-weight: 600;
   background: var(--bg-strong);
-}
-.sidebar-item.sub {
-  padding-left: 30px;
-  font-size: 0.92rem;
 }
 .sidebar-item .project-dot {
   flex: none;
@@ -2596,11 +2666,6 @@ th {
 .release-cell-name {
   white-space: nowrap;
 }
-.release-cell-name .project-dot {
-  display: inline-block;
-  margin-right: 10px;
-  vertical-align: middle;
-}
 .release-cell-date,
 .release-cell-status {
   white-space: nowrap;
@@ -2673,4 +2738,24 @@ th {
 .progress-readonly .muted-text {
   font-size: 0.85em;
   opacity: 0.7;
+}
+
+/* Dashboard: the one top-level destination in the sidebar */
+.sidebar-head .sidebar-dashboard {
+  flex: 1;
+  font-weight: 600;
+  border: 1px solid var(--line);
+}
+.sidebar-dashboard .sidebar-icon {
+  flex: none;
+}
+.sidebar-dashboard:hover,
+.sidebar-dashboard.current {
+  background: var(--bg-strong);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.sidebar-dashboard:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

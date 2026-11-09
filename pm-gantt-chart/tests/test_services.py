@@ -565,13 +565,52 @@ class MilestoneCrudTests(unittest.TestCase):
         self.assertIsNone(milestone.actual_date)
 
     def test_update_leaves_omitted_fields_alone(self) -> None:
-        milestone = self._create(description="Agreed with mobile.", progress=25)
+        milestone = self._create(description="Agreed with mobile.")
 
-        services.update_milestone(self.db, milestone, schemas.MilestoneUpdate(progress=60))
+        services.update_milestone(self.db, milestone, schemas.MilestoneUpdate(status="blocked"))
 
-        self.assertEqual(milestone.progress, 60)
+        self.assertEqual(milestone.status, "blocked")
         self.assertEqual(milestone.description, "Agreed with mobile.")
         self.assertEqual(milestone.target_date, date(2026, 7, 4))
+
+    def test_progress_is_never_accepted_from_clients(self) -> None:
+        milestone = self._create(progress=25)
+        self.assertEqual(milestone.progress, 0)
+
+        services.update_milestone(self.db, milestone, schemas.MilestoneUpdate(progress=60))
+        self.assertEqual(milestone.progress, 0)
+
+    def test_progress_is_the_share_of_linked_stories_that_are_done(self) -> None:
+        milestone = self._create()
+        self.assertEqual(services.compute_milestone_progress(self.db, milestone.id), 0)
+
+        rows = [
+            ("SNA-1", "Story", "Done"),
+            ("SNA-2", "Story", "In Progress"),
+            ("SNA-3", "Epic", "Done"),  # epics never count
+        ]
+        for key, issue_type, category in rows:
+            issue = models.JiraIssue(
+                jira_key=key,
+                jira_url=f"https://example.atlassian.net/browse/{key}",
+                issue_type=issue_type,
+                status_category=category,
+                synced_at=datetime(2026, 8, 1, 12, 0, 0),
+            )
+            self.db.add(issue)
+            self.db.flush()
+            self.db.add(
+                models.MilestoneJiraLink(
+                    milestone_id=milestone.id,
+                    jira_issue_id=issue.id,
+                    linked_at=datetime(2026, 8, 1, 12, 0, 0),
+                )
+            )
+        self.db.commit()
+
+        services.recalc_milestone_progress(self.db, milestone.id)
+        self.db.commit()
+        self.assertEqual(milestone.progress, 50)
 
     def test_deliverables_carry_their_milestones_sorted_by_target_date(self) -> None:
         self._create(title="Client generated", target_date=date(2026, 7, 8))

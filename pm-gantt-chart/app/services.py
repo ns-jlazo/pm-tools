@@ -716,6 +716,15 @@ def _check_label_range(start: Optional[date], end: Optional[date]) -> None:
         raise ValueError("Jira label range start must be on or before its end.")
 
 
+def _percent_done(rows) -> int:
+    """Percent of non-epic (issue_type, status_category) rows that are done."""
+    stories = [r for r in rows if (r[0] or "").strip().lower() != "epic"]
+    if not stories:
+        return 0
+    done = sum(1 for r in stories if (r[1] or "").strip().lower() == "done")
+    return round(done / len(stories) * 100)
+
+
 def compute_deliverable_progress(db: Session, deliverable_id: int) -> int:
     """Percent of a deliverable's linked stories that are done.
 
@@ -729,11 +738,30 @@ def compute_deliverable_progress(db: Session, deliverable_id: int) -> int:
         )
         .where(models.DeliverableJiraLink.deliverable_id == deliverable_id)
     ).all()
-    stories = [r for r in rows if (r[0] or "").strip().lower() != "epic"]
-    if not stories:
-        return 0
-    done = sum(1 for r in stories if (r[1] or "").strip().lower() == "done")
-    return round(done / len(stories) * 100)
+    return _percent_done(rows)
+
+
+def compute_milestone_progress(db: Session, milestone_id: int) -> int:
+    """Percent of a milestone's linked stories that are done (epics ignored)."""
+    rows = db.execute(
+        select(models.JiraIssue.issue_type, models.JiraIssue.status_category)
+        .join(
+            models.MilestoneJiraLink,
+            models.MilestoneJiraLink.jira_issue_id == models.JiraIssue.id,
+        )
+        .where(models.MilestoneJiraLink.milestone_id == milestone_id)
+    ).all()
+    return _percent_done(rows)
+
+
+def recalc_milestone_progress(db: Session, milestone_id: int) -> None:
+    """Recompute and store progress for one milestone (caller commits)."""
+    milestone = db.get(models.Milestone, milestone_id)
+    if milestone is None:
+        return
+    value = compute_milestone_progress(db, milestone_id)
+    if milestone.progress != value:
+        milestone.progress = value
 
 
 def recalc_deliverable_progress(db: Session, deliverable_id: int) -> None:
@@ -756,6 +784,13 @@ def recalc_progress_for_issue(db: Session, jira_issue_id: int) -> None:
     ).all()
     for deliverable_id in set(ids):
         recalc_deliverable_progress(db, deliverable_id)
+    milestone_ids = db.scalars(
+        select(models.MilestoneJiraLink.milestone_id).where(
+            models.MilestoneJiraLink.jira_issue_id == jira_issue_id
+        )
+    ).all()
+    for milestone_id in set(milestone_ids):
+        recalc_milestone_progress(db, milestone_id)
 
 
 def create_deliverable(
@@ -871,7 +906,8 @@ def create_milestone(
         target_date=payload.target_date,
         actual_date=payload.actual_date,
         status=payload.status,
-        progress=payload.progress,
+        # Derived from linked Jira stories; never accepted from clients.
+        progress=0,
     )
     db.add(milestone)
     db.commit()
@@ -883,6 +919,8 @@ def update_milestone(
     db: Session, milestone: models.Milestone, payload: schemas.MilestoneUpdate
 ) -> models.Milestone:
     updates = payload.model_dump(exclude_unset=True)
+    # Progress is derived from linked Jira stories; never accept it from clients.
+    updates.pop("progress", None)
 
     if "team_id" in updates and updates["team_id"] is not None:
         _validate_milestone_team(db, milestone.deliverable, updates["team_id"])
