@@ -93,6 +93,10 @@ class Release(Base):
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     release_date: Mapped[Optional[Date]] = mapped_column(Date)
+    # planned | on_track | at_risk | completed
+    status: Mapped[str] = mapped_column(
+        String(20), default="planned", nullable=False, server_default=text("'planned'")
+    )
 
     project: Mapped[Project] = relationship("Project", back_populates="releases")
     deliverables: Mapped[List["Deliverable"]] = relationship(

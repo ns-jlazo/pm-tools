@@ -263,6 +263,27 @@ def _migrate_releases(bind=None) -> None:
             )
 
 
+def _migrate_release_status(bind=None) -> None:
+    """Add `releases.status` (planned | on_track | at_risk | completed).
+
+    Existing releases become "planned". Idempotent: gated on the column.
+    """
+    bind = bind if bind is not None else engine
+    inspector = inspect(bind)
+    if "releases" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("releases")}
+    if "status" in columns:
+        return
+    with bind.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE releases ADD COLUMN status VARCHAR(20) "
+                "NOT NULL DEFAULT 'planned'"
+            )
+        )
+
+
 def _ensure_v2_schema() -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -274,6 +295,7 @@ def _ensure_v2_schema() -> None:
     _migrate_created_at(engine)
     _migrate_jira_label(engine)
     _migrate_releases(engine)
+    _migrate_release_status(engine)
     # Adds any table an existing database is missing — the milestone tables, and
     # `project_key_dates`. New *columns* still need an explicit migration above.
     Base.metadata.create_all(bind=engine)

@@ -10,6 +10,7 @@ from app.main import (
     _migrate_example_flag,
     _migrate_jira_label,
     _migrate_release_date,
+    _migrate_release_status,
     _migrate_releases,
 )
 
@@ -493,3 +494,42 @@ class MigrateCreatedAtTests(unittest.TestCase):
         self.assertEqual(set(inspect(engine).get_table_names()), set())
         engine.dispose()
 
+
+
+class ReleaseStatusMigrationTests(unittest.TestCase):
+    """Existing releases gain a status and start out planned."""
+
+    def setUp(self) -> None:
+        self.engine = create_engine("sqlite:///:memory:")
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE TABLE releases (id INTEGER PRIMARY KEY, "
+                    "project_id INTEGER NOT NULL, name VARCHAR(160) NOT NULL)"
+                )
+            )
+            connection.execute(text("INSERT INTO releases VALUES (1, 1, '1.0')"))
+
+    def tearDown(self) -> None:
+        self.engine.dispose()
+
+    def _statuses(self):
+        with self.engine.begin() as connection:
+            return [r[0] for r in connection.execute(text("SELECT status FROM releases"))]
+
+    def test_adds_status_defaulting_to_planned(self) -> None:
+        _migrate_release_status(self.engine)
+        self.assertEqual(self._statuses(), ["planned"])
+
+    def test_second_run_is_a_no_op(self) -> None:
+        _migrate_release_status(self.engine)
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE releases SET status = 'at_risk'"))
+        _migrate_release_status(self.engine)
+        self.assertEqual(self._statuses(), ["at_risk"])
+
+    def test_no_ops_when_releases_table_is_absent(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        _migrate_release_status(engine)  # must not raise
+        self.assertEqual(set(inspect(engine).get_table_names()), set())
+        engine.dispose()

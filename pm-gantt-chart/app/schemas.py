@@ -47,15 +47,20 @@ class ProjectRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+RELEASE_STATUS_PATTERN = "^(planned|on_track|at_risk|completed)$"
+
+
 class ReleaseCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     description: str = ""
     release_date: Optional[date] = None
+    status: str = Field(default="planned", pattern=RELEASE_STATUS_PATTERN)
 
 
 class ReleaseUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=160)
     description: Optional[str] = None
+    status: Optional[str] = Field(default=None, pattern=RELEASE_STATUS_PATTERN)
     # An explicit null clears the date — see `services.update_release`.
     release_date: Optional[date] = None
 

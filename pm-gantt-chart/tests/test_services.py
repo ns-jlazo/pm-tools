@@ -321,6 +321,31 @@ class ProjectMutationTests(unittest.TestCase):
         services.update_release(self.db, release, schemas.ReleaseUpdate(release_date=None))
         self.assertIsNone(release.release_date)
 
+    def test_release_status_defaults_to_planned_and_can_change(self) -> None:
+        project = self._project_with_work("Alpha")
+        release = services.create_release(
+            self.db, project.id, schemas.ReleaseCreate(name="1.0")
+        )
+        self.assertEqual(release.status, "planned")
+
+        for status in ("on_track", "at_risk", "completed", "planned"):
+            services.update_release(
+                self.db, release, schemas.ReleaseUpdate(status=status)
+            )
+            self.assertEqual(release.status, status)
+
+        # An omitted status leaves it alone.
+        services.update_release(self.db, release, schemas.ReleaseUpdate(name="1.0.1"))
+        self.assertEqual(release.status, "planned")
+
+    def test_release_status_rejects_unknown_values(self) -> None:
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            schemas.ReleaseCreate(name="1.0", status="active")
+        with self.assertRaises(ValidationError):
+            schemas.ReleaseUpdate(status="inactive")
+
     def test_release_names_are_unique_per_project(self) -> None:
         alpha = self._project_with_work("Alpha")
         beta = self._project_with_work("Beta")

@@ -350,6 +350,7 @@ def create_release(
         name=payload.name,
         description=payload.description,
         release_date=payload.release_date,
+        status=payload.status,
     )
     db.add(release)
     db.commit()

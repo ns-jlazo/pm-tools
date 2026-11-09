@@ -4880,12 +4880,28 @@ function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, o
 
 // Create or edit one release. Its timeline dates ride along when editing: key
 // dates belong to a release, so they are managed here rather than per project.
+const RELEASE_STATUS_OPTIONS = [
+  { value: "planned", label: "Planned" },
+  { value: "on_track", label: "On track" },
+  { value: "at_risk", label: "At risk" },
+  { value: "completed", label: "Completed" },
+];
+
+function ReleaseStatusPill({ status }) {
+  const known = RELEASE_STATUS_OPTIONS.find((option) => option.value === status);
+  const value = known ? known.value : "planned";
+  return html`
+    <span className=${`release-status-pill ${value}`}>${known ? known.label : "Planned"}</span>
+  `;
+}
+
 function ReleaseDrawer({ projectId, release, keyDates, onClose, onNotify, onSaved, onDeleted }) {
   const editing = Boolean(release);
   const [draft, setDraft] = useState({
     name: release ? release.name : "",
     description: release ? release.description || "" : "",
     release_date: release ? release.release_date || "" : "",
+    status: release ? release.status || "planned" : "planned",
   });
   const [confirmName, setConfirmName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -4956,6 +4972,15 @@ function ReleaseDrawer({ projectId, release, keyDates, onClose, onNotify, onSave
             <span className="help-text">
               Optional — when this release reaches customers. Drawn as a marker on the timeline.
             </span>
+          </div>
+          <div className="field-wide">
+            <label>Status</label>
+            <${SegmentedControl}
+              ariaLabel="Release status"
+              value=${draft.status}
+              options=${RELEASE_STATUS_OPTIONS}
+              onChange=${(value) => setDraft({ ...draft, status: value })}
+            />
           </div>
           <div className="field-wide">
             <label htmlFor="release-description">Description</label>
@@ -5089,28 +5114,40 @@ function ProjectWorkspaceView({ project, onBack, onOpenRelease, onNotify, onProj
         <p className="panel-copy">Select a release to view its timeline, deliverables, and risk.</p>
         ${releases && releases.length
           ? html`
-              <div className="project-grid">
-                ${releases.map(
-                  (release) => html`
-                    <article className="project-card release-card" key=${release.id} style=${{ "--project-color": project.color }}>
-                      <div className="project-card-header">
-                        <div className="project-dot"></div>
-                        <strong>${release.name}</strong>
-                      </div>
-                      <p className="panel-copy project-card-copy">${release.description || "No description yet."}</p>
-                      <p className="help-text project-card-release">
-                        ${release.release_date
-                          ? `Release · ${formatReleaseDate(release.release_date)}`
-                          : "No release date yet"}
-                      </p>
-                      <div className="actions">
-                        <button className="button-primary" type="button" onClick=${() => onOpenRelease(release.id)}>
-                          View release
-                        </button>
-                      </div>
-                    </article>
-                  `
-                )}
+              <div className="table-shell release-table-shell" style=${{ "--project-color": project.color }}>
+                <table className="release-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Release name</th>
+                      <th scope="col">Release date</th>
+                      <th scope="col">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${releases.map(
+                      (release) => html`
+                        <tr
+                          className="release-row"
+                          key=${release.id}
+                          onClick=${() => onOpenRelease(release.id)}
+                        >
+                          <td className="release-cell-name">
+                            <span className="project-dot" aria-hidden="true"></span>
+                            <strong>${release.name}</strong>
+                          </td>
+                          <td className="release-cell-date">
+                            ${release.release_date
+                              ? formatReleaseDate(release.release_date)
+                              : html`<span className="help-text">No release date yet</span>`}
+                          </td>
+                          <td className="release-cell-status">
+                            <${ReleaseStatusPill} status=${release.status} />
+                          </td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                </table>
               </div>
             `
           : releases
@@ -5285,6 +5322,7 @@ function ReleaseOverviewView({
           <p className="hero-release">
             ${release.name}
             ${release.release_date ? ` · ${formatReleaseDate(release.release_date)}` : " · no release date yet"}
+            ${" "}<${ReleaseStatusPill} status=${release.status} />
             <button
               className="icon-button"
               type="button"
