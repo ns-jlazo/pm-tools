@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -185,6 +185,60 @@ def _migrate_jira_label(bind=None) -> None:
             connection.execute(text(f"ALTER TABLE deliverables ADD COLUMN {name} {ddl}"))
 
 
+def _migrate_releases(bind=None) -> None:
+    """Introduce releases: `projects.status`, `release_id` on deliverables and
+    key dates, and one default release per workspace holding the existing data.
+
+    `create_all` adds the `releases` table but never columns, so the ALTERs are
+    explicit. Idempotent: each step is gated on the column/table state, and the
+    default-release backfill only touches rows whose release_id is still NULL.
+    """
+    bind = bind if bind is not None else engine
+    inspector = inspect(bind)
+    tables = set(inspector.get_table_names())
+    if "projects" not in tables:
+        return
+    Base.metadata.create_all(bind=bind, tables=[Base.metadata.tables["releases"]])
+
+    with bind.begin() as connection:
+        project_columns = {c["name"] for c in inspector.get_columns("projects")}
+        if "status" not in project_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE projects ADD COLUMN status VARCHAR(20) "
+                    "NOT NULL DEFAULT 'active'"
+                )
+            )
+        for table in ("deliverables", "project_key_dates"):
+            if table not in tables:
+                continue
+            columns = {c["name"] for c in inspector.get_columns(table)}
+            if "release_id" not in columns:
+                connection.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN release_id INTEGER")
+                )
+
+        # Workspaces with no release yet get "Release 1", seeded from the legacy
+        # project-level release date.
+        connection.execute(
+            text(
+                "INSERT INTO releases (project_id, name, description, release_date) "
+                "SELECT id, 'Release 1', '', release_date FROM projects "
+                "WHERE id NOT IN (SELECT project_id FROM releases)"
+            )
+        )
+        for table in ("deliverables", "project_key_dates"):
+            if table not in tables:
+                continue
+            connection.execute(
+                text(
+                    f"UPDATE {table} SET release_id = ("
+                    "SELECT MIN(id) FROM releases WHERE releases.project_id = "
+                    f"{table}.project_id) WHERE release_id IS NULL"
+                )
+            )
+
+
 def _ensure_v2_schema() -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -194,6 +248,7 @@ def _ensure_v2_schema() -> None:
     _migrate_example_flag(engine)
     _migrate_release_date(engine)
     _migrate_jira_label(engine)
+    _migrate_releases(engine)
     # Adds any table an existing database is missing — the milestone tables, and
     # `project_key_dates`. New *columns* still need an explicit migration above.
     Base.metadata.create_all(bind=engine)
@@ -259,12 +314,69 @@ def delete_project(project_id: int, db: Session = Depends(get_db)) -> Response:
 
 @app.get("/api/projects/{project_id}/dashboard", response_model=schemas.DashboardData)
 def get_project_dashboard(
-    project_id: int, db: Session = Depends(get_db)
+    project_id: int,
+    release_id: Optional[int] = None,
+    db: Session = Depends(get_db),
 ) -> schemas.DashboardData:
     try:
-        return services.dashboard_payload(db, project_id)
+        return services.dashboard_payload(db, project_id, release_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get(
+    "/api/projects/{project_id}/releases", response_model=List[schemas.ReleaseCard]
+)
+def get_project_releases(
+    project_id: int, db: Session = Depends(get_db)
+) -> List[schemas.ReleaseCard]:
+    if services.get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return services.release_cards(db, project_id)
+
+
+@app.post(
+    "/api/projects/{project_id}/releases",
+    response_model=schemas.ReleaseRead,
+    status_code=201,
+)
+def create_project_release(
+    project_id: int,
+    payload: schemas.ReleaseCreate,
+    db: Session = Depends(get_db),
+) -> schemas.ReleaseRead:
+    if services.get_project(db, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    try:
+        release = services.create_release(db, project_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return schemas.ReleaseRead.model_validate(release)
+
+
+@app.put("/api/releases/{release_id}", response_model=schemas.ReleaseRead)
+def update_release(
+    release_id: int,
+    payload: schemas.ReleaseUpdate,
+    db: Session = Depends(get_db),
+) -> schemas.ReleaseRead:
+    release = services.get_release(db, release_id)
+    if release is None:
+        raise HTTPException(status_code=404, detail="Release not found.")
+    try:
+        services.update_release(db, release, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return schemas.ReleaseRead.model_validate(release)
+
+
+@app.delete("/api/releases/{release_id}", status_code=204, response_class=Response)
+def delete_release(release_id: int, db: Session = Depends(get_db)) -> Response:
+    release = services.get_release(db, release_id)
+    if release is None:
+        raise HTTPException(status_code=404, detail="Release not found.")
+    services.delete_release(db, release)
+    return Response(status_code=204)
 
 
 @app.get("/api/projects/{project_id}/teams", response_model=List[schemas.TeamRead])
@@ -364,7 +476,10 @@ def create_project_key_date(
 ) -> schemas.ProjectKeyDateRead:
     if services.get_project(db, project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found.")
-    key_date = services.create_key_date(db, project_id, payload)
+    try:
+        key_date = services.create_key_date(db, project_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return schemas.ProjectKeyDateRead.model_validate(key_date)
 
 
@@ -592,6 +707,7 @@ def delete_milestone(milestone_id: int, db: Session = Depends(get_db)) -> Respon
 async def upload_project_csv(
     project_id: int,
     file: UploadFile = File(...),
+    release_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ) -> schemas.CsvImportResult:
     if services.get_project(db, project_id) is None:
@@ -599,7 +715,7 @@ async def upload_project_csv(
 
     content = await file.read()
     try:
-        return services.import_csv(db, project_id, content)
+        return services.import_csv(db, project_id, content, release_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

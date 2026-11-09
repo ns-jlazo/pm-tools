@@ -9,6 +9,7 @@ from app.main import (
     _migrate_example_flag,
     _migrate_jira_label,
     _migrate_release_date,
+    _migrate_releases,
 )
 
 
@@ -379,3 +380,74 @@ class JiraLabelMigrationTests(unittest.TestCase):
         _migrate_jira_label(self.engine)  # must not raise
 
         self.assertEqual(set(inspect(self.engine).get_table_names()), set())
+
+
+class ReleasesMigrationTests(unittest.TestCase):
+    """Existing data moves into one default release per workspace."""
+
+    def setUp(self) -> None:
+        self.engine = create_engine(
+            "sqlite:///:memory:", connect_args={"check_same_thread": False}
+        )
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE TABLE projects (id INTEGER PRIMARY KEY, name VARCHAR(160) "
+                    "NOT NULL, description TEXT NOT NULL, color VARCHAR(20) NOT NULL, "
+                    "is_example BOOLEAN NOT NULL DEFAULT 0, release_date DATE)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE TABLE deliverables (id INTEGER PRIMARY KEY, "
+                    "project_id INTEGER NOT NULL)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE TABLE project_key_dates (id INTEGER PRIMARY KEY, "
+                    "project_id INTEGER NOT NULL)"
+                )
+            )
+            connection.execute(
+                text("INSERT INTO projects VALUES (1, 'A', '', '#000', 0, '2026-09-01')")
+            )
+            connection.execute(
+                text("INSERT INTO projects VALUES (2, 'B', '', '#000', 0, NULL)")
+            )
+            connection.execute(text("INSERT INTO deliverables VALUES (1, 1), (2, 2)"))
+            connection.execute(text("INSERT INTO project_key_dates VALUES (1, 1)"))
+
+    def tearDown(self) -> None:
+        self.engine.dispose()
+
+    def test_backfills_a_default_release_per_workspace(self) -> None:
+        _migrate_releases(self.engine)
+
+        with self.engine.begin() as connection:
+            releases = connection.execute(
+                text("SELECT id, project_id, name, release_date FROM releases ORDER BY id")
+            ).all()
+            owners = connection.execute(
+                text(
+                    "SELECT d.id, r.project_id = d.project_id FROM deliverables d "
+                    "JOIN releases r ON r.id = d.release_id ORDER BY d.id"
+                )
+            ).all()
+            key_dates = connection.execute(
+                text("SELECT release_id FROM project_key_dates")
+            ).all()
+            status = connection.execute(text("SELECT status FROM projects")).all()
+        self.assertEqual([(r[1], r[2], r[3]) for r in releases],
+                         [(1, "Release 1", "2026-09-01"), (2, "Release 1", None)])
+        self.assertEqual([tuple(o) for o in owners], [(1, 1), (2, 1)])
+        self.assertEqual([k[0] for k in key_dates], [releases[0][0]])
+        self.assertEqual([s[0] for s in status], ["active", "active"])
+
+    def test_is_idempotent(self) -> None:
+        _migrate_releases(self.engine)
+        _migrate_releases(self.engine)
+
+        with self.engine.begin() as connection:
+            count = connection.execute(text("SELECT COUNT(*) FROM releases")).scalar()
+        self.assertEqual(count, 2)

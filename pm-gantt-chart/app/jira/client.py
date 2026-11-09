@@ -165,6 +165,25 @@ class JiraClient:
         response.raise_for_status()
         return response.json()
 
+    def count_issues(self, jql: str) -> int:
+        """Approximate number of issues matching `jql`.
+
+        `/search/jql` is token-paginated and reports no total, so the UI gets
+        its "of N" from `/search/approximate-count`.
+        """
+        response = self._session.post(
+            f"{self.url}/rest/api/3/search/approximate-count",
+            json={"jql": jql},
+            verify=_ssl_verify(),
+            timeout=_SEARCH_TIMEOUT,
+        )
+        if not response.ok:
+            logger.error(
+                "Jira count failed: %s %s", response.status_code, response.text[:500]
+            )
+        response.raise_for_status()
+        return int(response.json().get("count") or 0)
+
     def search_all_issues(
         self,
         jql: str,

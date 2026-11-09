@@ -51,8 +51,17 @@ class Project(Base):
     )
     # When the software reaches customers. Optional: most workspaces are onboarded
     # before a release is committed to.
+    # Legacy single release date, kept only so the release migration can seed the
+    # first Release from it. The UI reads Release.release_date instead.
     release_date: Mapped[Optional[Date]] = mapped_column(Date)
+    # "active" or "inactive" — inactive workspaces are projects no longer under way.
+    status: Mapped[str] = mapped_column(
+        String(20), default="active", nullable=False, server_default=text("'active'")
+    )
 
+    releases: Mapped[List["Release"]] = relationship(
+        "Release", back_populates="project", cascade="all, delete-orphan"
+    )
     teams: Mapped[List["Team"]] = relationship(
         "Team", back_populates="project", cascade="all, delete-orphan"
     )
@@ -61,6 +70,31 @@ class Project(Base):
     )
     key_dates: Mapped[List["ProjectKeyDate"]] = relationship(
         "ProjectKeyDate", back_populates="project", cascade="all, delete-orphan"
+    )
+
+
+class Release(Base):
+    """One release of a workspace; owns its own deliverables and key dates."""
+
+    __tablename__ = "releases"
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uq_release_project_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    release_date: Mapped[Optional[Date]] = mapped_column(Date)
+
+    project: Mapped[Project] = relationship("Project", back_populates="releases")
+    deliverables: Mapped[List["Deliverable"]] = relationship(
+        "Deliverable", back_populates="release", cascade="all, delete-orphan"
+    )
+    key_dates: Mapped[List["ProjectKeyDate"]] = relationship(
+        "ProjectKeyDate", back_populates="release", cascade="all, delete-orphan"
     )
 
 
@@ -82,7 +116,14 @@ class ProjectKeyDate(Base):
     # `event_date`, not `date`, so the column never reads as `datetime.date`.
     event_date: Mapped[Date] = mapped_column(Date, nullable=False)
 
+    release_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("releases.id", ondelete="CASCADE")
+    )
+
     project: Mapped[Project] = relationship("Project", back_populates="key_dates")
+    release: Mapped[Optional[Release]] = relationship(
+        "Release", back_populates="key_dates"
+    )
 
 
 class Team(Base):
@@ -153,7 +194,14 @@ class Deliverable(Base):
     jira_label_from: Mapped[Optional[Date]] = mapped_column(Date)
     jira_label_to: Mapped[Optional[Date]] = mapped_column(Date)
 
+    release_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("releases.id", ondelete="CASCADE")
+    )
+
     project: Mapped[Project] = relationship("Project", back_populates="deliverables")
+    release: Mapped[Optional[Release]] = relationship(
+        "Release", back_populates="deliverables"
+    )
     team: Mapped[Team] = relationship("Team", back_populates="deliverables")
     outgoing_links: Mapped[List[DeliverableDependency]] = relationship(
         "DeliverableDependency",

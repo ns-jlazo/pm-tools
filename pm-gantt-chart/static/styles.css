@@ -1,13 +1,13 @@
 :root {
-  --bg: #f3efe6;
-  --bg-strong: #e4dccd;
+  --bg: #f5f7fb;
+  --bg-strong: #e6ebf4;
   --surface: rgba(255, 255, 255, 0.86);
-  --surface-strong: rgba(247, 244, 237, 0.96);
+  --surface-strong: rgba(248, 250, 253, 0.96);
   --ink: #1e293b;
   --muted: #52606d;
   --line: rgba(30, 41, 59, 0.12);
-  --accent: #0f766e;
-  --accent-2: #ea580c;
+  --accent: #1d4ed8;
+  --accent-2: #0ea5e9;
   --danger: #b91c1c;
   --warning: #b45309;
   --success: #166534;
@@ -28,9 +28,8 @@ body {
   min-height: 100vh;
   color: var(--ink);
   background:
-    radial-gradient(circle at top left, rgba(15, 118, 110, 0.2), transparent 28%),
-    radial-gradient(circle at bottom right, rgba(234, 88, 12, 0.18), transparent 25%),
-    linear-gradient(180deg, #f7f2e8 0%, #efe7d8 100%);
+    radial-gradient(circle at top left, rgba(29, 78, 216, 0.06), transparent 30%),
+    linear-gradient(180deg, #ffffff 0%, #f1f5fb 100%);
 }
 
 body::before {
@@ -119,7 +118,7 @@ button {
   width: 220px;
   height: 220px;
   border-radius: 50%;
-  background: rgba(15, 118, 110, 0.08);
+  background: rgba(29, 78, 216, 0.08);
   top: -40px;
   right: -60px;
 }
@@ -130,7 +129,7 @@ button {
   gap: 8px;
   padding: 8px 12px;
   border-radius: 999px;
-  background: rgba(15, 118, 110, 0.12);
+  background: rgba(29, 78, 216, 0.12);
   color: var(--accent);
   font-size: 12px;
   font-weight: 700;
@@ -353,13 +352,23 @@ button {
 }
 
 .button-primary {
-  background: linear-gradient(120deg, var(--accent), #115e59);
+  background: linear-gradient(120deg, var(--accent), #1e40af);
   color: white;
+}
+
+.button-primary:hover {
+  background: linear-gradient(120deg, #1e40af, #1e3a8a);
 }
 
 .button-secondary {
   background: rgba(30, 41, 59, 0.08);
   color: var(--ink);
+}
+
+.button-primary:disabled,
+.button-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .help-text,
@@ -599,7 +608,7 @@ button {
 }
 
 .task-bar.editing {
-  outline: 3px solid rgba(15, 118, 110, 0.45);
+  outline: 3px solid rgba(29, 78, 216, 0.45);
 }
 
 .bar-title {
@@ -631,7 +640,7 @@ button {
 }
 
 .milestone-toggle:hover {
-  border-color: rgba(15, 118, 110, 0.45);
+  border-color: rgba(29, 78, 216, 0.45);
 }
 
 /* Shorter than a deliverable row: a marker needs far less vertical room than a
@@ -646,7 +655,7 @@ button {
 }
 
 .milestone-row.editing {
-  background: rgba(15, 118, 110, 0.06);
+  background: rgba(29, 78, 216, 0.06);
 }
 
 .milestone-cell {
@@ -853,7 +862,7 @@ button {
   top: 0;
   bottom: 0;
   width: 0;
-  border-left: 2px dashed rgba(15, 118, 110, 0.75);
+  border-left: 2px dashed rgba(29, 78, 216, 0.75);
 }
 
 /* Reserved space for the date labels, between the header and the first row. It is
@@ -914,7 +923,7 @@ button {
   line-height: 1.2;
   padding: 3px 8px;
   border-radius: 999px;
-  background: rgba(15, 118, 110, 0.92);
+  background: rgba(29, 78, 216, 0.92);
   color: white;
   font-size: 0.7rem;
   font-weight: 700;
@@ -927,7 +936,7 @@ button {
   position: absolute;
   bottom: 0;
   width: 0;
-  border-left: 2px dashed rgba(15, 118, 110, 0.75);
+  border-left: 2px dashed rgba(29, 78, 216, 0.75);
 }
 
 .line-high {
@@ -1116,31 +1125,10 @@ th {
   margin-top: 24px;
 }
 
-/* Quick edit is a real modal: as an in-row absolute element it stretched the
-   timeline grid and scrolled with the chart. Sits under the story picker's
-   z-index 40 so a picker opened from here stacks on top. */
-.inline-modal-backdrop {
-  z-index: 30;
-}
-
-.inline-modal {
-  width: min(520px, 100%);
-  max-height: 85vh;
-  /* Wheeling the story list must not scroll the timeline behind it. */
-  overscroll-behavior: contain;
-  gap: 12px;
-}
-
-/* The compact chip strip was clamped for the old in-row popover; the modal is
+/* The compact chip strip was clamped for the old in-row popover; the drawer is
    wider, so story summaries can breathe. */
-.inline-modal .jira-task-links.compact .jira-chip-summary {
+.side-drawer .jira-task-links.compact .jira-chip-summary {
   max-width: 260px;
-}
-
-/* DeliverableForm lays its fields out in two columns, so its modal needs the
-   room the quick edit does not. */
-.inline-modal.wide {
-  width: min(760px, 100%);
 }
 
 .inline-grid {
@@ -1364,38 +1352,7 @@ th {
   letter-spacing: 0.04em;
 }
 
-/* Modal picker */
-
-.jira-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 40;
-  padding: 20px;
-}
-
-.jira-modal {
-  background: var(--surface-strong);
-  border-radius: 18px;
-  box-shadow: var(--shadow);
-  width: min(720px, 100%);
-  max-height: 90vh;
-  overflow-y: auto;
-  padding: 22px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.jira-modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-}
+/* Story picker (a stacked side drawer — see .side-drawer.top) */
 
 .jira-modal-tabs {
   display: flex;
@@ -1510,8 +1467,8 @@ th {
   gap: 8px;
   padding: 6px 10px;
   border-radius: 999px;
-  background: rgba(15, 118, 110, 0.1);
-  border: 1px solid rgba(15, 118, 110, 0.25);
+  background: rgba(29, 78, 216, 0.1);
+  border: 1px solid rgba(29, 78, 216, 0.25);
   font-size: 0.85rem;
 }
 
@@ -1615,8 +1572,8 @@ th {
 }
 
 .jira-status-chip.selected {
-  border-color: rgba(15, 118, 110, 0.4);
-  background: rgba(15, 118, 110, 0.12);
+  border-color: rgba(29, 78, 216, 0.4);
+  background: rgba(29, 78, 216, 0.12);
   color: var(--accent);
 }
 
@@ -1714,7 +1671,7 @@ th {
 .summary-card-button:hover {
   transform: translateY(-1px);
   box-shadow: 0 22px 60px rgba(15, 23, 42, 0.16);
-  border-color: rgba(15, 118, 110, 0.35);
+  border-color: rgba(29, 78, 216, 0.35);
 }
 
 .summary-card-button:focus-visible {
@@ -1723,52 +1680,82 @@ th {
 }
 
 @keyframes scroll-flash-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0.55); }
-  60%  { box-shadow: 0 0 0 18px rgba(15, 118, 110, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0); }
+  0%   { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0.55); }
+  60%  { box-shadow: 0 0 0 18px rgba(29, 78, 216, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0); }
 }
 
 .scroll-flash {
   animation: scroll-flash-pulse 1.2s ease-out 1;
 }
 
-/* ---------------- Side drawer (workspace settings) ---------------- */
+/* ---------------- Side drawer (every editor and picker) ---------------- */
 
-.team-drawer-backdrop {
+.side-drawer-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.45);
+  background: rgba(15, 23, 42, 0.4);
   z-index: 45;
   display: flex;
   justify-content: flex-end;
+  animation: side-drawer-fade 160ms ease-out;
 }
 
-.team-drawer {
-  width: min(420px, 100%);
+/* A drawer opened from another drawer (the story picker) stacks above it. */
+.side-drawer-backdrop.top {
+  z-index: 50;
+}
+
+.side-drawer {
+  position: relative;
+  width: min(440px, 100%);
   height: 100%;
   background: var(--surface-strong);
   box-shadow: var(--shadow);
   padding: 22px 24px;
   overflow-y: auto;
+  /* Wheeling a long list must not scroll the page behind the drawer. */
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 18px;
-  animation: team-drawer-in 180ms ease-out;
+  animation: side-drawer-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-@keyframes team-drawer-in {
-  from { transform: translateX(24px); opacity: 0; }
-  to   { transform: translateX(0); opacity: 1; }
+.side-drawer.wide {
+  width: min(760px, 100%);
 }
 
-.team-drawer-header {
+@keyframes side-drawer-in {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+@keyframes side-drawer-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .side-drawer,
+  .side-drawer-backdrop {
+    animation: none;
+  }
+}
+
+.side-drawer-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  padding-right: 36px;
 }
 
-.team-drawer-row-error {
+.side-drawer-header h2 {
+  margin: 0;
+}
+
+.side-drawer-row-error {
   grid-column: 1 / -1;
   color: var(--danger);
   background: rgba(185, 28, 28, 0.08);
@@ -1833,7 +1820,7 @@ th {
   margin-left: auto;
 }
 
-.key-date-row .team-drawer-row-error {
+.key-date-row .side-drawer-row-error {
   flex: 1 1 100%;
 }
 
@@ -1865,7 +1852,7 @@ th {
 .back-link:hover,
 .back-link:focus-visible {
   color: var(--accent);
-  background: rgba(15, 118, 110, 0.08);
+  background: rgba(29, 78, 216, 0.08);
 }
 
 .hero-title-row {
@@ -1890,8 +1877,8 @@ th {
 
 .icon-button:hover {
   color: var(--accent);
-  background: rgba(15, 118, 110, 0.1);
-  border-color: rgba(15, 118, 110, 0.35);
+  background: rgba(29, 78, 216, 0.1);
+  border-color: rgba(29, 78, 216, 0.35);
 }
 
 .project-drawer-danger {
@@ -1946,8 +1933,8 @@ th {
 }
 
 .contrib-chip.selected {
-  background: rgba(15, 118, 110, 0.12);
-  border-color: rgba(15, 118, 110, 0.45);
+  background: rgba(29, 78, 216, 0.12);
+  border-color: rgba(29, 78, 216, 0.45);
   color: var(--ink);
   font-weight: 600;
 }
@@ -1964,8 +1951,8 @@ th {
   padding: 2px 8px;
   margin-left: 6px;
   border-radius: 999px;
-  background: rgba(15, 118, 110, 0.1);
-  border: 1px solid rgba(15, 118, 110, 0.25);
+  background: rgba(29, 78, 216, 0.1);
+  border: 1px solid rgba(29, 78, 216, 0.25);
   font-family: inherit;
   font-size: 0.75rem;
   font-weight: 600;
@@ -1975,7 +1962,7 @@ th {
 }
 
 .team-plus-pill:hover {
-  background: rgba(15, 118, 110, 0.18);
+  background: rgba(29, 78, 216, 0.18);
 }
 
 .team-plus-pill[aria-expanded="true"] {
@@ -2133,7 +2120,7 @@ th {
 
 .jira-result-row.selected {
   border-color: var(--accent);
-  background: rgba(15, 118, 110, 0.07);
+  background: rgba(29, 78, 216, 0.07);
 }
 
 .jira-select-box {
@@ -2144,16 +2131,16 @@ th {
 
 /* Jira label: "N new" badge, row state pills and the undated toggle. */
 .jira-new-badge {
-  border: 1px solid #0f766e;
-  background: #ccfbf1;
-  color: #115e59;
+  border: 1px solid #1d4ed8;
+  background: #dbeafe;
+  color: #1e40af;
   cursor: pointer;
   font-weight: 600;
 }
 
 .jira-new-pill {
-  background: #ccfbf1;
-  color: #115e59;
+  background: #dbeafe;
+  color: #1e40af;
 }
 
 .jira-linked-elsewhere {
@@ -2166,16 +2153,6 @@ th {
   align-items: center;
   gap: 4px;
   margin-left: 8px;
-}
-
-.jira-modal,
-.team-drawer {
-  position: relative;
-}
-
-.jira-modal-header,
-.team-drawer-header {
-  padding-right: 36px;
 }
 
 .modal-close {
@@ -2204,4 +2181,194 @@ th {
 .modal-close:focus-visible {
   outline: 2px solid #fca5a5;
   outline-offset: 2px;
+}
+
+/* ---------------- Dashboard header, cards, status ---------------- */
+
+.dashboard-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin: 8px 0 28px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dashboard-header.compact {
+  margin: 0 0 8px;
+  padding-bottom: 0;
+  border-bottom: none;
+  align-items: center;
+}
+
+.dashboard-title {
+  margin: 0;
+  font-size: 1.9rem;
+  letter-spacing: -0.01em;
+}
+
+.dashboard-subtitle {
+  margin: 6px 0 0;
+  color: var(--muted);
+  max-width: 60ch;
+}
+
+.dashboard-header .button-primary {
+  white-space: nowrap;
+}
+
+/* Calmer cards: a hairline border and a soft lift instead of a heavy shadow. */
+.project-card {
+  border: 1px solid var(--line);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: box-shadow 140ms ease, transform 140ms ease;
+  border-top: 3px solid var(--project-color, var(--accent));
+}
+
+.project-card:hover {
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.1);
+  transform: translateY(-1px);
+}
+
+.project-card.example {
+  border-top-style: dashed;
+}
+
+.project-card .actions {
+  margin-top: auto;
+}
+
+.project-card-copy {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.project-card-release {
+  margin: 0;
+}
+
+.project-card.inactive {
+  opacity: 0.72;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.project-inactive-pill {
+  background: rgba(180, 83, 9, 0.12);
+  color: var(--warning);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.68rem;
+}
+
+.project-card-header .project-inactive-pill {
+  margin-left: auto;
+}
+
+.project-card-header .project-example-pill + .project-inactive-pill {
+  margin-left: 0;
+}
+
+.inactive-group {
+  margin-bottom: 24px;
+}
+
+.inactive-group > summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.inactive-group > .panel-copy {
+  margin: 4px 0 14px;
+}
+
+/* ---------------- Segmented control ---------------- */
+
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 12px;
+  background: rgba(30, 41, 59, 0.07);
+}
+
+.segmented-option {
+  border: none;
+  background: transparent;
+  padding: 7px 14px;
+  border-radius: 9px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.segmented-option.active {
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.15);
+}
+
+.segmented-option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---------------- Example -> active, release switcher ---------------- */
+
+.convert-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px dashed rgba(29, 78, 216, 0.5);
+  background: rgba(29, 78, 216, 0.06);
+}
+
+.workspace-topbar {
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.release-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.release-switcher select {
+  font: inherit;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
+.hero-release .icon-button {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+@media (max-width: 640px) {
+  .dashboard-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }

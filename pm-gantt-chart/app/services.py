@@ -66,10 +66,17 @@ def seed_data(db: Session) -> None:
             description=description,
             color=color,
             is_example=True,
-            release_date=release_date,
         )
         db.add(project)
         projects.append(project)
+    db.flush()
+    seed_releases = {}
+    for project, (_, _, _, release_date) in zip(projects, DEFAULT_PROJECTS):
+        release = models.Release(
+            project_id=project.id, name="Release 1", release_date=release_date
+        )
+        db.add(release)
+        seed_releases[project.id] = release
     db.flush()
 
     for project_index, project in enumerate(projects):
@@ -90,6 +97,7 @@ def seed_data(db: Session) -> None:
         deliverables = [
             models.Deliverable(
                 project_id=project.id,
+                release_id=seed_releases[project.id].id,
                 title=f"{prefix} Requirements Lock",
                 description="Freeze scope and acceptance criteria for the quarter.",
                 team_id=team_map["Core Platform"],
@@ -102,6 +110,7 @@ def seed_data(db: Session) -> None:
             ),
             models.Deliverable(
                 project_id=project.id,
+                release_id=seed_releases[project.id].id,
                 title=f"{prefix} API Contracts",
                 description="Finalize service contracts used by downstream teams.",
                 team_id=team_map["Core Platform"],
@@ -114,6 +123,7 @@ def seed_data(db: Session) -> None:
             ),
             models.Deliverable(
                 project_id=project.id,
+                release_id=seed_releases[project.id].id,
                 title=f"{prefix} Mobile UX Build",
                 description="Implement the first feature wave in the mobile client.",
                 team_id=team_map["Mobile Experience"],
@@ -126,6 +136,7 @@ def seed_data(db: Session) -> None:
             ),
             models.Deliverable(
                 project_id=project.id,
+                release_id=seed_releases[project.id].id,
                 title=f"{prefix} Analytics Schema",
                 description="Define the event schema that supports launch reporting.",
                 team_id=team_map["Data & Analytics"],
@@ -138,6 +149,7 @@ def seed_data(db: Session) -> None:
             ),
             models.Deliverable(
                 project_id=project.id,
+                release_id=seed_releases[project.id].id,
                 title=f"{prefix} Launch Readiness",
                 description="Cross-functional milestone for launch decisioning.",
                 team_id=team_map["Data & Analytics"],
@@ -213,19 +225,24 @@ def get_project(db: Session, project_id: int) -> Optional[models.Project]:
     return db.get(models.Project, project_id)
 
 
-# Project fields where an explicit null is a real value, not "leave alone".
-_NULLABLE_PROJECT_FIELDS = frozenset({"release_date"})
-
-
 def create_project(db: Session, payload: schemas.ProjectCreate) -> models.Project:
     project = models.Project(
         name=payload.name,
         description=payload.description,
         color=payload.color,
         is_example=payload.is_example,
-        release_date=payload.release_date,
+        status=payload.status,
     )
     db.add(project)
+    db.flush()
+    # Every workspace starts with one release so there is always somewhere to plan.
+    db.add(
+        models.Release(
+            project_id=project.id,
+            name=(payload.release_name or "").strip() or "Release 1",
+            release_date=payload.release_date,
+        )
+    )
     db.commit()
     db.refresh(project)
     return project
@@ -235,6 +252,7 @@ def update_project(
     db: Session, project: models.Project, payload: schemas.ProjectUpdate
 ) -> models.Project:
     updates = payload.model_dump(exclude_unset=True)
+    clear_sample_data = updates.pop("clear_sample_data", False)
     if "name" in updates and updates["name"] and updates["name"] != project.name:
         clash = db.scalar(
             select(models.Project).where(
@@ -244,12 +262,17 @@ def update_project(
         )
         if clash is not None:
             raise ValueError("Another project already uses that name.")
+    promoting = project.is_example and updates.get("is_example") is False
     for field, value in updates.items():
-        # description may legitimately be cleared to "", so only skip None —
-        # except for release_date, where None *is* the cleared state. Since the
-        # dump excludes unset fields, a null that reaches here was sent on purpose.
-        if value is not None or field in _NULLABLE_PROJECT_FIELDS:
+        # description may legitimately be cleared to "", so only skip None.
+        if value is not None:
             setattr(project, field, value)
+    if promoting and clear_sample_data:
+        # Deleting through the ORM cascades milestones, links and dependencies.
+        for deliverable in list(project.deliverables):
+            db.delete(deliverable)
+        for key_date in list(project.key_dates):
+            db.delete(key_date)
     db.commit()
     db.refresh(project)
     return project
@@ -266,13 +289,103 @@ def delete_project(db: Session, project: models.Project) -> None:
     db.commit()
 
 
-def list_key_dates(db: Session, project_id: int) -> List[models.ProjectKeyDate]:
+def list_releases(db: Session, project_id: int) -> List[models.Release]:
     stmt = (
-        select(models.ProjectKeyDate)
-        .where(models.ProjectKeyDate.project_id == project_id)
-        .order_by(models.ProjectKeyDate.event_date)
+        select(models.Release)
+        .where(models.Release.project_id == project_id)
+        .order_by(models.Release.release_date.is_(None), models.Release.release_date, models.Release.id)
     )
     return list(db.scalars(stmt).all())
+
+
+def get_release(db: Session, release_id: int) -> Optional[models.Release]:
+    return db.get(models.Release, release_id)
+
+
+def default_release(db: Session, project_id: int) -> models.Release:
+    """The release used when a caller does not name one: the latest, by id.
+
+    A workspace with no releases gets "Release 1" created on the spot so
+    deliverables and key dates always have a home.
+    """
+    release = db.scalar(
+        select(models.Release)
+        .where(models.Release.project_id == project_id)
+        .order_by(models.Release.id.desc())
+        .limit(1)
+    )
+    if release is None:
+        release = models.Release(project_id=project_id, name="Release 1")
+        db.add(release)
+        db.flush()
+    return release
+
+
+def resolve_release_id(db: Session, project_id: int, release_id: Optional[int]) -> int:
+    if release_id is None:
+        return default_release(db, project_id).id
+    release = db.get(models.Release, release_id)
+    if release is None or release.project_id != project_id:
+        raise ValueError("Release does not belong to the selected project.")
+    return release.id
+
+
+def _check_release_name(
+    db: Session, project_id: int, name: str, exclude_id: Optional[int] = None
+) -> None:
+    stmt = select(models.Release).where(
+        models.Release.project_id == project_id, models.Release.name == name
+    )
+    clash = db.scalar(stmt)
+    if clash is not None and clash.id != exclude_id:
+        raise ValueError("Another release in this workspace already uses that name.")
+
+
+def create_release(
+    db: Session, project_id: int, payload: schemas.ReleaseCreate
+) -> models.Release:
+    _check_release_name(db, project_id, payload.name)
+    release = models.Release(
+        project_id=project_id,
+        name=payload.name,
+        description=payload.description,
+        release_date=payload.release_date,
+    )
+    db.add(release)
+    db.commit()
+    db.refresh(release)
+    return release
+
+
+def update_release(
+    db: Session, release: models.Release, payload: schemas.ReleaseUpdate
+) -> models.Release:
+    updates = payload.model_dump(exclude_unset=True)
+    if updates.get("name"):
+        _check_release_name(db, release.project_id, updates["name"], release.id)
+    for field, value in updates.items():
+        # An explicit null is the cleared state only for the date.
+        if value is not None or field == "release_date":
+            setattr(release, field, value)
+    db.commit()
+    db.refresh(release)
+    return release
+
+
+def delete_release(db: Session, release: models.Release) -> None:
+    db.delete(release)
+    db.commit()
+
+
+def list_key_dates(
+    db: Session, project_id: int, release_id: Optional[int] = None
+) -> List[models.ProjectKeyDate]:
+    stmt = select(models.ProjectKeyDate).where(
+        models.ProjectKeyDate.project_id == project_id
+    )
+    if release_id is not None:
+        stmt = stmt.where(models.ProjectKeyDate.release_id == release_id)
+    return list(db.scalars(stmt.order_by(models.ProjectKeyDate.event_date)).all())
 
 
 def get_key_date(db: Session, key_date_id: int) -> Optional[models.ProjectKeyDate]:
@@ -284,6 +397,7 @@ def create_key_date(
 ) -> models.ProjectKeyDate:
     key_date = models.ProjectKeyDate(
         project_id=project_id,
+        release_id=resolve_release_id(db, project_id, payload.release_id),
         name=payload.name,
         color=payload.color,
         event_date=payload.event_date,
@@ -459,10 +573,15 @@ def calculate_risk(deliverable: models.Deliverable) -> DeliverableRisk:
     )
 
 
-def list_deliverables(db: Session, project_id: int) -> List[models.Deliverable]:
+def list_deliverables(
+    db: Session, project_id: int, release_id: Optional[int] = None
+) -> List[models.Deliverable]:
+    conditions = [models.Deliverable.project_id == project_id]
+    if release_id is not None:
+        conditions.append(models.Deliverable.release_id == release_id)
     stmt = (
         select(models.Deliverable)
-        .where(models.Deliverable.project_id == project_id)
+        .where(*conditions)
         .options(
             selectinload(models.Deliverable.team),
             selectinload(models.Deliverable.contributor_teams),
@@ -511,6 +630,7 @@ def serialize_deliverable(deliverable: models.Deliverable) -> schemas.Deliverabl
     return schemas.DeliverableRead(
         id=deliverable.id,
         project_id=deliverable.project_id,
+        release_id=deliverable.release_id,
         title=deliverable.title,
         description=deliverable.description,
         team_id=deliverable.team_id,
@@ -605,6 +725,7 @@ def create_deliverable(
 
     deliverable = models.Deliverable(
         project_id=project_id,
+        release_id=resolve_release_id(db, project_id, payload.release_id),
         title=payload.title,
         description=payload.description,
         team_id=payload.team_id,
@@ -750,7 +871,10 @@ def _parse_dependencies(value: Optional[str]) -> List[str]:
     return [item.strip() for item in normalized.split(",") if item.strip()]
 
 
-def import_csv(db: Session, project_id: int, raw_bytes: bytes) -> schemas.CsvImportResult:
+def import_csv(
+    db: Session, project_id: int, raw_bytes: bytes, release_id: Optional[int] = None
+) -> schemas.CsvImportResult:
+    release_id = resolve_release_id(db, project_id, release_id)
     text = raw_bytes.decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
     rows = list(reader)
@@ -786,6 +910,7 @@ def import_csv(db: Session, project_id: int, raw_bytes: bytes) -> schemas.CsvImp
         try:
             deliverable = models.Deliverable(
                 project_id=project_id,
+                release_id=release_id,
                 title=title,
                 description=(row.get("description") or "").strip(),
                 team_id=team.id,
@@ -818,6 +943,7 @@ def import_csv(db: Session, project_id: int, raw_bytes: bytes) -> schemas.CsvImp
                 dependency_deliverable = db.scalar(
                     select(models.Deliverable).where(
                         models.Deliverable.project_id == project_id,
+                        models.Deliverable.release_id == release_id,
                         models.Deliverable.title == dependency_title,
                     )
                 )
@@ -838,10 +964,22 @@ def import_csv(db: Session, project_id: int, raw_bytes: bytes) -> schemas.CsvImp
     )
 
 
-def dashboard_payload(db: Session, project_id: int) -> schemas.DashboardData:
+def dashboard_payload(
+    db: Session, project_id: int, release_id: Optional[int] = None
+) -> schemas.DashboardData:
     project = get_project(db, project_id)
     if project is None:
         raise ValueError("Project not found.")
+
+    releases = list_releases(db, project_id)
+    if release_id is None:
+        # Latest release by id, matching `default_release`.
+        selected = max(releases, key=lambda item: item.id) if releases else None
+    else:
+        selected = next((item for item in releases if item.id == release_id), None)
+        if selected is None:
+            raise ValueError("Release not found.")
+    scope_id = selected.id if selected is not None else -1
 
     teams = [
         schemas.TeamRead.model_validate(team)
@@ -849,7 +987,7 @@ def dashboard_payload(db: Session, project_id: int) -> schemas.DashboardData:
     ]
     serialized_deliverables = [
         serialize_deliverable(deliverable)
-        for deliverable in list_deliverables(db, project_id)
+        for deliverable in list_deliverables(db, project_id, scope_id)
     ]
     summary = schemas.DashboardSummary(
         total_deliverables=len(serialized_deliverables),
@@ -859,20 +997,48 @@ def dashboard_payload(db: Session, project_id: int) -> schemas.DashboardData:
     )
     return schemas.DashboardData(
         project=schemas.ProjectRead.model_validate(project),
+        release=schemas.ReleaseRead.model_validate(selected) if selected else None,
+        releases=[schemas.ReleaseRead.model_validate(item) for item in releases],
         teams=teams,
         deliverables=serialized_deliverables,
         summary=summary,
         key_dates=[
             schemas.ProjectKeyDateRead.model_validate(key_date)
-            for key_date in list_key_dates(db, project_id)
+            for key_date in list_key_dates(db, project_id, scope_id)
         ],
     )
 
 
+def release_cards(db: Session, project_id: int) -> List[schemas.ReleaseCard]:
+    cards: List[schemas.ReleaseCard] = []
+    for release in list_releases(db, project_id):
+        items = [
+            serialize_deliverable(deliverable)
+            for deliverable in list_deliverables(db, project_id, release.id)
+        ]
+        cards.append(
+            schemas.ReleaseCard(
+                **schemas.ReleaseRead.model_validate(release).model_dump(),
+                total_deliverables=len(items),
+                delayed_deliverables=sum(1 for item in items if item.delayed),
+                at_risk_deliverables=sum(1 for item in items if item.at_risk),
+            )
+        )
+    return cards
+
+
 def project_cards(db: Session) -> List[schemas.ProjectCard]:
     cards: List[schemas.ProjectCard] = []
+    today = date.today()
     for project in list_projects(db):
-        payload = dashboard_payload(db, project.id)
+        releases = list_releases(db, project.id)
+        # Counts roll up across every release in the workspace.
+        deliverables = [
+            serialize_deliverable(deliverable)
+            for deliverable in list_deliverables(db, project.id)
+        ]
+        dates = sorted(r.release_date for r in releases if r.release_date)
+        upcoming = [d for d in dates if d >= today]
         cards.append(
             schemas.ProjectCard(
                 id=project.id,
@@ -880,10 +1046,13 @@ def project_cards(db: Session) -> List[schemas.ProjectCard]:
                 description=project.description,
                 color=project.color,
                 is_example=project.is_example,
-                total_deliverables=payload.summary.total_deliverables,
-                delayed_deliverables=payload.summary.delayed_deliverables,
-                at_risk_deliverables=payload.summary.at_risk_deliverables,
-                total_teams=payload.summary.total_teams,
+                status=project.status,
+                total_deliverables=len(deliverables),
+                delayed_deliverables=sum(1 for item in deliverables if item.delayed),
+                at_risk_deliverables=sum(1 for item in deliverables if item.at_risk),
+                total_teams=len(list_teams(db, project.id)),
+                total_releases=len(releases),
+                next_release_date=(upcoming or dates or [None])[0],
             )
         )
     return cards

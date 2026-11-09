@@ -10,7 +10,9 @@ class ProjectCreate(BaseModel):
     description: str = ""
     color: str = Field(default="#0f766e", min_length=4, max_length=20)
     is_example: bool = False
-    # When the software becomes available to customers.
+    status: str = Field(default="active", pattern="^(active|inactive)$")
+    # Seeds the workspace's first release (see `services.create_project`).
+    release_name: Optional[str] = Field(default=None, max_length=160)
     release_date: Optional[date] = None
 
 
@@ -19,14 +21,46 @@ class ProjectUpdate(BaseModel):
     description: Optional[str] = None
     color: Optional[str] = Field(default=None, min_length=4, max_length=20)
     is_example: Optional[bool] = None
-    # An explicit null clears the date — see `services.update_project`.
+    status: Optional[str] = Field(default=None, pattern="^(active|inactive)$")
+    # Only honored when is_example flips true -> false: drop the sample data.
+    clear_sample_data: bool = False
+
+
+class ProjectRead(BaseModel):
+    id: int
+    name: str
+    description: str = ""
+    color: str
+    is_example: bool = False
+    status: str = "active"
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReleaseCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str = ""
     release_date: Optional[date] = None
 
 
-class ProjectRead(ProjectCreate):
+class ReleaseUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    description: Optional[str] = None
+    # An explicit null clears the date — see `services.update_release`.
+    release_date: Optional[date] = None
+
+
+class ReleaseRead(ReleaseCreate):
     id: int
+    project_id: int
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ReleaseCard(ReleaseRead):
+    total_deliverables: int = 0
+    delayed_deliverables: int = 0
+    at_risk_deliverables: int = 0
 
 
 class ProjectCard(BaseModel):
@@ -35,10 +69,13 @@ class ProjectCard(BaseModel):
     description: str
     color: str
     is_example: bool = False
+    status: str = "active"
     total_deliverables: int
     delayed_deliverables: int
     at_risk_deliverables: int
     total_teams: int
+    total_releases: int = 0
+    next_release_date: Optional[date] = None
 
 
 class ProjectKeyDateCreate(BaseModel):
@@ -47,6 +84,8 @@ class ProjectKeyDateCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     color: str = Field(default="#7c3aed", min_length=4, max_length=20)
     event_date: date
+    # Defaults to the workspace's latest release when omitted.
+    release_id: Optional[int] = None
 
 
 class ProjectKeyDateUpdate(BaseModel):
@@ -58,6 +97,7 @@ class ProjectKeyDateUpdate(BaseModel):
 class ProjectKeyDateRead(ProjectKeyDateCreate):
     id: int
     project_id: int
+    release_id: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -145,6 +185,8 @@ def _blank_to_none(value: Optional[str]) -> Optional[str]:
 
 class DeliverableBase(BaseModel):
     project_id: Optional[int] = None
+    # Defaults to the workspace's latest release when omitted.
+    release_id: Optional[int] = None
     title: str = Field(min_length=1, max_length=200)
     description: str = ""
     team_id: int
@@ -197,6 +239,7 @@ class DeliverableUpdate(BaseModel):
 class DeliverableRead(BaseModel):
     id: int
     project_id: int
+    release_id: Optional[int] = None
     title: str
     description: str
     team_id: int
@@ -236,6 +279,9 @@ class DashboardSummary(BaseModel):
 
 class DashboardData(BaseModel):
     project: ProjectRead
+    # The release the deliverables and key dates belong to (None: no releases yet).
+    release: Optional[ReleaseRead] = None
+    releases: List[ReleaseRead] = Field(default_factory=list)
     teams: List[TeamRead]
     deliverables: List[DeliverableRead]
     summary: DashboardSummary
@@ -265,7 +311,7 @@ class JiraSearchResult(BaseModel):
 
 
 class JiraSearchResponse(BaseModel):
-    total: int
+    total: Optional[int] = None
     issues: List[JiraSearchResult]
     next_page_token: Optional[str] = None
     is_last: bool = True

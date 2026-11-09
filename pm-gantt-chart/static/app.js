@@ -15,8 +15,9 @@ const STATUS_FILTER_PREFIX = "pm-tool.jira-status-filter.";
 const DEFAULT_PROJECT = {
   name: "",
   description: "",
-  color: "#0f766e",
+  color: "#1d4ed8",
   is_example: false,
+  release_name: "Release 1",
   release_date: "",
 };
 // A named date drawn on the timeline beside the release marker.
@@ -481,14 +482,14 @@ function pageOf(items, page) {
   return { index, items: items.slice(from, from + JIRA_PAGE_SIZE), from, hasNext: index < last };
 }
 
-function JiraPager({ index, from, count, hasNext, busy, onPrev, onNext }) {
+function JiraPager({ index, from, count, total, hasNext, busy, onPrev, onNext }) {
   if (index === 0 && !hasNext) return null;
   return html`
     <div className="jira-pager">
       <button type="button" className="button-secondary" disabled=${busy || index === 0} onClick=${onPrev}>
         ‹ Previous
       </button>
-      <span className="help-text">Page ${index + 1} · showing ${from + 1}–${from + count}</span>
+      <span className="help-text">Page ${index + 1} · showing ${from + 1}–${from + count}${total ? ` of ${Math.max(total, from + count)}` : ""}</span>
       <button type="button" className="button-primary" disabled=${busy || !hasNext} onClick=${onNext}>
         Next page ›
       </button>
@@ -570,7 +571,7 @@ function JiraSelectionBar({ visible, selected, alreadyLinked, submitting, onSele
   return html`
     <div className="jira-selection-bar">
       <button type="button" className="button-secondary" disabled=${!pageSelectable.length} onClick=${() => onSelectPage(pageSelectable)}>
-        Select page
+        Select all on this page
       </button>
       <button type="button" className="button-secondary" disabled=${!count} onClick=${onClear}>Clear</button>
       <span className="help-text">${count} selected</span>
@@ -635,6 +636,7 @@ function JiraPickerModal({
   const [pageTokens, setPageTokens] = useState([null]);
   const [pageIndex, setPageIndex] = useState(0);
   const [nextToken, setNextToken] = useState(null);
+  const [searchTotal, setSearchTotal] = useState(null);
   const [activeQuery, setActiveQuery] = useState("");
   const [epicPage, setEpicPage] = useState(0);
   const [labelPage, setLabelPage] = useState(0);
@@ -833,6 +835,7 @@ function JiraPickerModal({
       setResults(issues);
       setSearched(true);
       setPageIndex(index);
+      if (index === 0) setSearchTotal(payload.total || null);
       setNextToken(payload.is_last ? null : payload.next_page_token || null);
       if (!issues.length && index === 0) setError(await jiraTrouble());
     } catch (err) {
@@ -853,6 +856,7 @@ function JiraPickerModal({
     }
     setActiveQuery(query);
     setPageTokens([null]);
+    setSearchTotal(null);
     setSelected({});
     return fetchSearchPage(query, [null], 0);
   };
@@ -926,15 +930,8 @@ function JiraPickerModal({
   // Portalled to <body>: the backdrop is position: fixed anyway, and mounting
   // it outside the caller's markup keeps the picker's own forms from ever
   // becoming nested forms (see `takeOver`).
-  return createPortal(
-    html`
-    <div className="jira-modal-backdrop" role="dialog" aria-modal="true" onClick=${onClose}>
-      <div className="jira-modal" onClick=${(event) => event.stopPropagation()}>
-        <header className="jira-modal-header">
-          <h3>${title}</h3>
-          <${CloseButton} onClose=${onClose} />
-        </header>
-
+  return html`
+    <${SideDrawer} title=${title} wide top onClose=${onClose}>
         <div className="jira-modal-tabs">
           ${hasEpics
             ? html`
@@ -1057,6 +1054,7 @@ function JiraPickerModal({
                         index=${epicPaged.index}
                         from=${epicPaged.from}
                         count=${epicPaged.items.length}
+                        total=${epicEntries.length}
                         hasNext=${epicPaged.hasNext}
                         onPrev=${() => setEpicPage(epicPaged.index - 1)}
                         onNext=${() => setEpicPage(epicPaged.index + 1)}
@@ -1244,6 +1242,7 @@ function JiraPickerModal({
                       index=${labelPaged.index}
                       from=${labelPaged.from}
                       count=${labelPaged.items.length}
+                      total=${labelVisible.length}
                       hasNext=${labelPaged.hasNext}
                       onPrev=${() => setLabelPage(labelPaged.index - 1)}
                       onNext=${() => setLabelPage(labelPaged.index + 1)}
@@ -1322,6 +1321,7 @@ function JiraPickerModal({
                       index=${pageIndex}
                       from=${pageIndex * JIRA_PAGE_SIZE}
                       count=${results.length}
+                      total=${searchTotal}
                       hasNext=${Boolean(nextToken)}
                       busy=${searching}
                       onPrev=${() => goToSearchPage(-1)}
@@ -1346,6 +1346,7 @@ function JiraPickerModal({
                       index=${pageIndex}
                       from=${pageIndex * JIRA_PAGE_SIZE}
                       count=${results.length}
+                      total=${searchTotal}
                       hasNext=${Boolean(nextToken)}
                       busy=${searching}
                       onPrev=${() => goToSearchPage(-1)}
@@ -1408,11 +1409,8 @@ function JiraPickerModal({
                 : null}
             `}
         ${error ? html`<div className="jira-modal-error">${error}</div>` : null}
-      </div>
-    </div>
-  `,
-    document.body
-  );
+    <//>
+  `;
 }
 
 function JiraEpicChildren({ epicKey, statusFilter }) {
@@ -1813,7 +1811,7 @@ function JiraProjectPanel({
                   </div>
                 `}
             ${group.team && teamError.id === group.team.id
-              ? html`<div className="team-drawer-row-error">${teamError.message}</div>`
+              ? html`<div className="side-drawer-row-error">${teamError.message}</div>`
               : null}
             ${group.links.length
               ? group.links.map(
@@ -2268,10 +2266,11 @@ function RichText({ text }) {
 const DESCRIPTION_HINT =
   "Line breaks are kept. Paste a URL to link it, or write [label](https://…) for a named link.";
 
-function ProjectCard({ project, onOpenProject }) {
+function ProjectCard({ project, onOpenProject, onConvert }) {
+  const inactive = project.status === "inactive";
   return html`
     <article
-      className=${`project-card ${project.is_example ? "example" : ""}`}
+      className=${`project-card ${project.is_example ? "example" : ""} ${inactive ? "inactive" : ""}`}
       style=${{ "--project-color": project.color }}
     >
       <div className="project-card-header">
@@ -2280,143 +2279,299 @@ function ProjectCard({ project, onOpenProject }) {
         ${project.is_example
           ? html`<span className="tiny-pill project-example-pill">Example</span>`
           : null}
+        ${inactive ? html`<span className="tiny-pill project-inactive-pill">Inactive</span>` : null}
       </div>
-      <p className="panel-copy">${project.description || "No description yet."}</p>
+      <p className="panel-copy project-card-copy">${project.description || "No description yet."}</p>
       <div className="project-stats">
+        <span className="tiny-pill">
+          ${project.total_releases} ${project.total_releases === 1 ? "release" : "releases"}
+        </span>
         <span className="tiny-pill">${project.total_deliverables} deliverables</span>
-        <span className="tiny-pill">${project.total_teams} teams</span>
         <span className="tiny-pill">${project.at_risk_deliverables} at risk</span>
       </div>
+      ${project.next_release_date
+        ? html`<p className="help-text project-card-release">
+            Next release · ${formatReleaseDate(project.next_release_date)}
+          </p>`
+        : null}
       <div className="actions">
         <button className="button-primary" type="button" onClick=${() => onOpenProject(project.id)}>
           Open workspace
         </button>
+        ${project.is_example
+          ? html`<button className="button-secondary" type="button" onClick=${() => onConvert(project)}>
+              Make active
+            </button>`
+          : null}
       </div>
     </article>
   `;
 }
 
-function LandingView({ projects, onOpenProject, projectForm, setProjectForm, onCreateProject, submitting }) {
-  // Real project work first; example workspaces are reference material and sit below.
-  const realProjects = projects.filter((project) => !project.is_example);
-  const exampleProjects = projects.filter((project) => project.is_example);
+function ProjectSection({ title, copy, projects, emptyText, onOpenProject, onConvert, className }) {
+  return html`
+    <section className=${`project-section ${className || ""}`}>
+      <div className="project-section-heading">
+        <h2>${title}</h2>
+        <span className="tiny-pill">${projects.length}</span>
+      </div>
+      <p className="panel-copy">${copy}</p>
+      ${projects.length
+        ? html`
+            <div className="project-grid">
+              ${projects.map(
+                (project) => html`<${ProjectCard}
+                  key=${project.id}
+                  project=${project}
+                  onOpenProject=${onOpenProject}
+                  onConvert=${onConvert}
+                />`
+              )}
+            </div>
+          `
+        : emptyText
+          ? html`<div className="empty-state">${emptyText}</div>`
+          : null}
+    </section>
+  `;
+}
+
+function LandingView({ projects, onOpenProject, onNewWorkspace, onConvert }) {
+  // Inactive wins over everything: a finished project is out of the way whether or
+  // not it started life as an example. Real project work first; examples below.
+  const inactiveProjects = projects.filter((project) => project.status === "inactive");
+  const liveProjects = projects.filter((project) => project.status !== "inactive");
+  const activeProjects = liveProjects.filter((project) => !project.is_example);
+  const exampleProjects = liveProjects.filter((project) => project.is_example);
 
   return html`
     <div className="app-shell">
-      <section className="landing-hero hero-card">
-        <div className="eyebrow">PM Tool v1</div>
-        <h1 className="hero-title">PPM Dashboard</h1>
-        <p className="hero-copy">
-          Select an onboarded project to review timeline risk, dependencies, and delivery status.
-        </p>
-      </section>
-
-      <section className="project-section">
-        <div className="project-section-heading">
-          <h2>Active project workspaces</h2>
-          <span className="tiny-pill">${realProjects.length}</span>
+      <header className="dashboard-header">
+        <div>
+          <h1 className="dashboard-title">Project workspaces</h1>
+          <p className="dashboard-subtitle">
+            Pick a workspace, then a release, to review timeline risk, dependencies, and delivery status.
+          </p>
         </div>
-        <p className="panel-copy">Workspaces tracking real delivery work.</p>
-        ${realProjects.length
-          ? html`
-              <div className="project-grid">
-                ${realProjects.map(
-                  (project) => html`<${ProjectCard}
-                    key=${project.id}
-                    project=${project}
-                    onOpenProject=${onOpenProject}
-                  />`
-                )}
-              </div>
-            `
-          : html`<div className="empty-state">
-              No real workspaces yet — onboard one below.
-            </div>`}
-      </section>
+        <button className="button-primary" type="button" onClick=${onNewWorkspace}>
+          + New Project Workspace
+        </button>
+      </header>
+
+      <${ProjectSection}
+        title="Active workspaces"
+        copy="Workspaces tracking real delivery work."
+        projects=${activeProjects}
+        emptyText="No active workspaces yet — use “+ New Project Workspace” to create one."
+        onOpenProject=${onOpenProject}
+        onConvert=${onConvert}
+      />
 
       ${exampleProjects.length
+        ? html`<${ProjectSection}
+            className="examples"
+            title="Example workspaces"
+            copy="Reference layouts for guidance — safe to experiment in. Use “Make active” to start real work in one."
+            projects=${exampleProjects}
+            onOpenProject=${onOpenProject}
+            onConvert=${onConvert}
+          />`
+        : null}
+
+      ${inactiveProjects.length
         ? html`
-            <section className="project-section examples">
-              <div className="project-section-heading">
-                <h2>Example workspaces</h2>
-                <span className="tiny-pill">${exampleProjects.length}</span>
-              </div>
-              <p className="panel-copy">
-                Reference layouts for guidance — safe to experiment in.
-              </p>
+            <details className="inactive-group">
+              <summary>
+                Inactive workspaces <span className="tiny-pill">${inactiveProjects.length}</span>
+              </summary>
+              <p className="panel-copy">Projects no longer under way. Still viewable; set one back to active in its settings.</p>
               <div className="project-grid">
-                ${exampleProjects.map(
+                ${inactiveProjects.map(
                   (project) => html`<${ProjectCard}
                     key=${project.id}
                     project=${project}
                     onOpenProject=${onOpenProject}
+                    onConvert=${onConvert}
                   />`
                 )}
               </div>
-            </section>
+            </details>
           `
         : null}
-
-      <section className="panel">
-        <h2>Onboard new project</h2>
-        <p className="panel-copy">Create a new project card and workspace in the PM tool.</p>
-        <form onSubmit=${onCreateProject}>
-          <div className="form-grid">
-            <div className="field-wide">
-              <label htmlFor="project-name">Project name</label>
-              <div className="name-row-inputs">
-                <input
-                  id="project-color"
-                  className="color-swatch"
-                  type="color"
-                  aria-label="Accent color"
-                  title="Accent color"
-                  value=${projectForm.color}
-                  onInput=${(event) => setProjectForm({ ...projectForm, color: event.target.value })}
-                />
-                <input id="project-name" value=${projectForm.name} onInput=${(event) => setProjectForm({ ...projectForm, name: event.target.value })} required />
-              </div>
-              <span className="help-text">The square sets the workspace accent color.</span>
-            </div>
-            <div className="field-wide">
-              <label htmlFor="project-description">Description</label>
-              <textarea id="project-description" rows="6" value=${projectForm.description} onInput=${(event) => setProjectForm({ ...projectForm, description: event.target.value })}></textarea>
-              <span className="help-text">${DESCRIPTION_HINT}</span>
-            </div>
-            <div className="field-wide">
-              <label htmlFor="project-release-date">Release date</label>
-              <input
-                id="project-release-date"
-                type="date"
-                value=${projectForm.release_date}
-                onInput=${(event) => setProjectForm({ ...projectForm, release_date: event.target.value })}
-              />
-              <span className="help-text">
-                The date is optional — it is when the software becomes available to customers, and
-                is drawn as a marker on the Timeline Overview.
-              </span>
-            </div>
-            <div className="field-wide">
-              <label className="checkbox-field" htmlFor="project-is-example">
-                <input
-                  id="project-is-example"
-                  type="checkbox"
-                  checked=${Boolean(projectForm.is_example)}
-                  onChange=${(event) => setProjectForm({ ...projectForm, is_example: event.target.checked })}
-                />
-                This is an example workspace
-              </label>
-              <span className="help-text">
-                Example workspaces are listed separately from real project work.
-              </span>
-            </div>
-          </div>
-          <div className="actions">
-              <button className="button-primary" type="submit" disabled=${submitting} aria-busy=${submitting}>Create project</button>
-          </div>
-        </form>
-      </section>
     </div>
+  `;
+}
+
+const WORKSPACE_TYPE_OPTIONS = [
+  { value: "active", label: "Active workspace" },
+  { value: "example", label: "Example workspace" },
+];
+const WORKSPACE_STATUS_OPTIONS = [
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+];
+
+// Creating a workspace is a side panel, not a form parked on the page. The type
+// choice is explicit: example workspaces are demo material, listed apart.
+function NewWorkspaceDrawer({ onClose, onCreate, submitting }) {
+  const [form, setForm] = useState(DEFAULT_PROJECT);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!form.name.trim()) return;
+    await onCreate({
+      name: form.name.trim(),
+      description: form.description,
+      color: form.color,
+      is_example: form.is_example,
+      release_name: form.release_name.trim() || "Release 1",
+      // An empty date box is "no release date yet", not an invalid date.
+      release_date: form.release_date || null,
+    });
+  };
+
+  return html`
+    <${SideDrawer} title="New project workspace" onClose=${onClose}>
+      <form onSubmit=${submit}>
+        <div className="form-grid">
+          <div className="field-wide">
+            <label>Workspace type</label>
+            <${SegmentedControl}
+              ariaLabel="Workspace type"
+              value=${form.is_example ? "example" : "active"}
+              options=${WORKSPACE_TYPE_OPTIONS}
+              onChange=${(value) => setForm({ ...form, is_example: value === "example" })}
+            />
+            <span className="help-text">
+              Active workspaces track real delivery work. Example workspaces are listed separately and can be made active later.
+            </span>
+          </div>
+          <div className="field-wide">
+            <label htmlFor="project-name">Project name</label>
+            <div className="name-row-inputs">
+              <input
+                id="project-color"
+                className="color-swatch"
+                type="color"
+                aria-label="Accent color"
+                title="Accent color"
+                value=${form.color}
+                onInput=${(event) => setForm({ ...form, color: event.target.value })}
+              />
+              <input
+                id="project-name"
+                value=${form.name}
+                onInput=${(event) => setForm({ ...form, name: event.target.value })}
+                required
+                autoFocus
+              />
+            </div>
+            <span className="help-text">The square sets the workspace accent color.</span>
+          </div>
+          <div className="field-wide">
+            <label htmlFor="project-description">Description</label>
+            <textarea
+              id="project-description"
+              rows="5"
+              value=${form.description}
+              onInput=${(event) => setForm({ ...form, description: event.target.value })}
+            ></textarea>
+            <span className="help-text">${DESCRIPTION_HINT}</span>
+          </div>
+          <div className="field-wide">
+            <label htmlFor="project-release-name">First release</label>
+            <input
+              id="project-release-name"
+              value=${form.release_name}
+              onInput=${(event) => setForm({ ...form, release_name: event.target.value })}
+            />
+          </div>
+          <div className="field-wide">
+            <label htmlFor="project-release-date">Release date</label>
+            <input
+              id="project-release-date"
+              type="date"
+              value=${form.release_date}
+              onInput=${(event) => setForm({ ...form, release_date: event.target.value })}
+            />
+            <span className="help-text">
+              Optional — when this release reaches customers. More releases can be added later.
+            </span>
+          </div>
+        </div>
+        <div className="actions">
+          <button
+            className="button-primary"
+            type="submit"
+            disabled=${submitting || !form.name.trim()}
+            aria-busy=${submitting}
+          >Create workspace</button>
+          <button className="button-secondary" type="button" onClick=${onClose}>Cancel</button>
+        </div>
+      </form>
+    <//>
+  `;
+}
+
+// Promotes an example workspace to a real one. The sample deliverables are kept
+// unless the user opts to clear them, so the workspace is not silently emptied.
+function ConvertToActiveSection({ project, summary, onNotify, onDone }) {
+  const [clearSamples, setClearSamples] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const convert = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/projects/${project.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ is_example: false, clear_sample_data: clearSamples }),
+      });
+      onNotify(`"${project.name}" is now an active workspace.`, "success");
+      await onDone();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return html`
+    <div className="convert-section">
+      <strong>Example workspace</strong>
+      <p className="panel-copy" style=${{ margin: 0 }}>
+        This is sample material. Convert it to an active workspace to start tracking real delivery work in it.
+      </p>
+      <label className="checkbox-field" htmlFor=${`convert-clear-${project.id}`}>
+        <input
+          id=${`convert-clear-${project.id}`}
+          type="checkbox"
+          checked=${clearSamples}
+          onChange=${(event) => setClearSamples(event.target.checked)}
+        />
+        Also remove the sample deliverables${summary ? ` (${summary.total_deliverables})` : ""}
+      </label>
+      <span className="help-text">Teams are kept either way.</span>
+      <div className="actions">
+        <button className="button-primary" type="button" onClick=${convert} disabled=${busy} aria-busy=${busy}>
+          Convert to active workspace
+        </button>
+      </div>
+      ${error ? html`<div className="side-drawer-row-error">${error}</div>` : null}
+    </div>
+  `;
+}
+
+function ConvertExampleDrawer({ project, onClose, onNotify, onDone }) {
+  return html`
+    <${SideDrawer} title=${`Make “${project.name}” active`} onClose=${onClose}>
+      <${ConvertToActiveSection}
+        project=${project}
+        summary=${project}
+        onNotify=${onNotify}
+        onDone=${onDone}
+      />
+    <//>
   `;
 }
 
@@ -2458,6 +2613,76 @@ function RecalcProgressButton({ scope = "deliverables", itemId, onProgress, onMe
       aria-busy=${working}
       title=${`Recalculate from the Jira stories linked to this ${noun}`}
     >${working ? "Recalculating…" : "Recalculate from Jira"}</button>
+  `;
+}
+
+// Every editor and picker in the app is a drawer gliding in from the right; there
+// are no centered pop-ups. Portalled to <body> so a drawer hosted inside a form
+// never makes a nested form, and so its fixed backdrop is not clipped by the
+// caller's layout. A drawer opened from another drawer (the story picker) passes
+// `top` to stack above it.
+const openDrawers = [];
+
+function SideDrawer({ title, subtitle, ariaLabel, wide, top, onClose, children }) {
+  // Esc closes only the top-most drawer: a document-level listener per drawer
+  // would otherwise dismiss the editor out from under a picker opened above it.
+  useEffect(() => {
+    const token = {};
+    openDrawers.push(token);
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      if (openDrawers[openDrawers.length - 1] !== token) return;
+      onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      openDrawers.splice(openDrawers.indexOf(token), 1);
+    };
+  }, [onClose]);
+
+  return createPortal(
+    html`
+      <div
+        className=${`side-drawer-backdrop ${top ? "top" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label=${ariaLabel || title}
+        onClick=${onClose}
+      >
+        <div
+          className=${`side-drawer ${wide ? "wide" : ""}`}
+          onClick=${(event) => event.stopPropagation()}
+        >
+          <header className="side-drawer-header">
+            <h2>${title}</h2>
+            <${CloseButton} onClose=${onClose} />
+          </header>
+          ${subtitle ? html`<p className="help-text" style=${{ margin: 0 }}>${subtitle}</p>` : null}
+          ${children}
+        </div>
+      </div>
+    `,
+    document.body
+  );
+}
+
+function SegmentedControl({ value, options, onChange, ariaLabel }) {
+  return html`
+    <div className="segmented" role="radiogroup" aria-label=${ariaLabel}>
+      ${options.map(
+        (option) => html`
+          <button
+            key=${option.value}
+            type="button"
+            role="radio"
+            aria-checked=${value === option.value}
+            className=${`segmented-option ${value === option.value ? "active" : ""}`}
+            onClick=${() => onChange(option.value)}
+          >${option.label}</button>
+        `
+      )}
+    </div>
   `;
 }
 
@@ -3381,42 +3606,9 @@ function DeliverableRosterPanel({
 // mounting outside the caller's markup keeps the story picker it may host from
 // ever becoming a nested form. A plain div, not a form, for the same reason.
 function EditorModal({ title, subtitle, wide, onClose, children }) {
-  // Esc closes, but only when this modal is the top one: the story picker is
-  // portalled to <body> as well, so a document-level listener would otherwise see
-  // its Esc and dismiss the editor out from under it.
-  useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.key !== "Escape") return;
-      if (document.querySelector(".jira-modal-backdrop:not(.inline-modal-backdrop)")) return;
-      onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
-  return createPortal(
-    html`
-    <div
-      className="jira-modal-backdrop inline-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
-      onClick=${onClose}
-    >
-      <div
-        className=${`jira-modal inline-modal ${wide ? "wide" : ""}`}
-        onClick=${(event) => event.stopPropagation()}
-      >
-        <header className="jira-modal-header">
-          <h3>${title}</h3>
-          <${CloseButton} onClose=${onClose} />
-        </header>
-        ${subtitle ? html`<p className="help-text">${subtitle}</p>` : null}
-        ${children}
-      </div>
-    </div>
-  `,
-    document.body
-  );
+  return html`<${SideDrawer} title=${title} subtitle=${subtitle} wide=${wide} onClose=${onClose}>
+    ${children}
+  <//>`;
 }
 
 // The chart's own editor: deliberately narrower than the roster's full form, for
@@ -3962,7 +4154,7 @@ function GanttChart({
       raw.push({
         id: "release",
         label: `Release ${formatDisplayDate(releaseDate)}`,
-        color: "#0f766e",
+        color: "#1d4ed8",
         date: releaseDate,
       });
     }
@@ -4312,7 +4504,7 @@ function GanttChart({
 // on the timeline in its own color. The release date keeps its own field above;
 // this is everything else. Writes land immediately, like the team rows in the
 // Jira panel, so a marker moves as soon as its row is saved.
-function TimelineDatesEditor({ projectId, keyDates, onNotify, onChanged }) {
+function TimelineDatesEditor({ projectId, releaseId, keyDates, onNotify, onChanged }) {
   const [editingId, setEditingId] = useState("");
   const [draft, setDraft] = useState(DEFAULT_KEY_DATE);
   const [addDraft, setAddDraft] = useState(DEFAULT_KEY_DATE);
@@ -4370,7 +4562,7 @@ function TimelineDatesEditor({ projectId, keyDates, onNotify, onChanged }) {
     try {
       await api(`/api/projects/${projectId}/key-dates`, {
         method: "POST",
-        body: JSON.stringify(addDraft),
+        body: JSON.stringify({ ...addDraft, release_id: releaseId }),
       });
       onNotify(`Date "${addDraft.name}" added.`, "success");
       setAddDraft(DEFAULT_KEY_DATE);
@@ -4431,7 +4623,7 @@ function TimelineDatesEditor({ projectId, keyDates, onNotify, onChanged }) {
                     disabled=${busy}
                   >Cancel</button>
                   ${rowError.id === keyDate.id
-                    ? html`<div className="team-drawer-row-error">${rowError.message}</div>`
+                    ? html`<div className="side-drawer-row-error">${rowError.message}</div>`
                     : null}
                 </div>
               `;
@@ -4458,7 +4650,7 @@ function TimelineDatesEditor({ projectId, keyDates, onNotify, onChanged }) {
                   >Remove</button>
                 </div>
                 ${rowError.id === keyDate.id
-                  ? html`<div className="team-drawer-row-error">${rowError.message}</div>`
+                  ? html`<div className="side-drawer-row-error">${rowError.message}</div>`
                   : null}
               </div>
             `;
@@ -4497,21 +4689,12 @@ function TimelineDatesEditor({ projectId, keyDates, onNotify, onChanged }) {
   `;
 }
 
-function ProjectSettingsDrawer({
-  project,
-  summary,
-  keyDates,
-  onClose,
-  onNotify,
-  onSaved,
-  onDeleted,
-}) {
+function ProjectSettingsDrawer({ project, summary, onClose, onNotify, onSaved, onDeleted }) {
   const [draft, setDraft] = useState({
     name: project.name,
     description: project.description || "",
     color: project.color,
-    is_example: Boolean(project.is_example),
-    release_date: project.release_date || "",
+    status: project.status || "active",
   });
   const [confirmName, setConfirmName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -4527,13 +4710,7 @@ function ProjectSettingsDrawer({
     try {
       await api(`/api/projects/${project.id}`, {
         method: "PUT",
-        // An empty date box means "no release committed to yet"; the API reads an
-        // explicit null as clearing the field.
-        body: JSON.stringify({
-          ...draft,
-          name: draft.name.trim(),
-          release_date: draft.release_date || null,
-        }),
+        body: JSON.stringify({ ...draft, name: draft.name.trim() }),
       });
       onNotify(`Workspace "${draft.name.trim()}" updated.`, "success");
       await onSaved();
@@ -4560,18 +4737,18 @@ function ProjectSettingsDrawer({
   };
 
   return html`
-    <div
-      className="team-drawer-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Edit project workspace"
-      onClick=${onClose}
-    >
-      <div className="team-drawer" onClick=${(event) => event.stopPropagation()}>
-        <header className="team-drawer-header">
-          <h2 style=${{ margin: 0 }}>Edit workspace</h2>
-          <${CloseButton} onClose=${onClose} />
-        </header>
+    <${SideDrawer} title="Edit workspace" ariaLabel="Edit project workspace" onClose=${onClose}>
+        ${project.is_example
+          ? html`<${ConvertToActiveSection}
+              project=${project}
+              summary=${summary}
+              onNotify=${onNotify}
+              onDone=${async () => {
+                await onSaved();
+                onClose();
+              }}
+            />`
+          : null}
 
         <form onSubmit=${save}>
           <div className="form-grid">
@@ -4607,26 +4784,15 @@ function ProjectSettingsDrawer({
               <span className="help-text">${DESCRIPTION_HINT}</span>
             </div>
             <div className="field-wide">
-              <label htmlFor="project-edit-release-date">Release date</label>
-              <input
-                id="project-edit-release-date"
-                type="date"
-                value=${draft.release_date}
-                onInput=${(event) => setDraft({ ...draft, release_date: event.target.value })}
+              <label>Status</label>
+              <${SegmentedControl}
+                ariaLabel="Workspace status"
+                value=${draft.status}
+                options=${WORKSPACE_STATUS_OPTIONS}
+                onChange=${(value) => setDraft({ ...draft, status: value })}
               />
-            </div>
-            <div className="field-wide">
-              <label className="checkbox-field" htmlFor="project-edit-is-example">
-                <input
-                  id="project-edit-is-example"
-                  type="checkbox"
-                  checked=${draft.is_example}
-                  onChange=${(event) => setDraft({ ...draft, is_example: event.target.checked })}
-                />
-                This is an example workspace
-              </label>
               <span className="help-text">
-                Moves this workspace between the active and example sections on the landing page.
+                Mark a workspace inactive when the project is no longer on-going. It moves to the Inactive section of the dashboard and stays viewable.
               </span>
             </div>
           </div>
@@ -4640,17 +4806,10 @@ function ProjectSettingsDrawer({
           </div>
         </form>
 
-        <${TimelineDatesEditor}
-          projectId=${project.id}
-          keyDates=${keyDates}
-          onNotify=${onNotify}
-          onChanged=${onSaved}
-        />
-
         <div className="project-drawer-danger">
           <strong>Danger zone</strong>
           <p className="panel-copy" style=${{ margin: 0 }}>
-            Deleting this workspace also removes ${summary.total_deliverables} deliverable(s), ${summary.total_teams} team(s), and every Jira link on them. This cannot be undone.
+            Deleting this workspace also removes its releases, ${summary.total_deliverables} deliverable(s), ${summary.total_teams} team(s), and every Jira link on them. This cannot be undone.
           </p>
           <div className="field-wide">
             <label htmlFor="project-delete-confirm">
@@ -4674,8 +4833,278 @@ function ProjectSettingsDrawer({
           </div>
         </div>
 
-        ${error ? html`<div className="team-drawer-row-error">${error}</div>` : null}
+        ${error ? html`<div className="side-drawer-row-error">${error}</div>` : null}
+    <//>
+  `;
+}
+
+// Create or edit one release. Its timeline dates ride along when editing: key
+// dates belong to a release, so they are managed here rather than per workspace.
+function ReleaseDrawer({ projectId, release, keyDates, onClose, onNotify, onSaved, onDeleted }) {
+  const editing = Boolean(release);
+  const [draft, setDraft] = useState({
+    name: release ? release.name : "",
+    description: release ? release.description || "" : "",
+    release_date: release ? release.release_date || "" : "",
+  });
+  const [confirmName, setConfirmName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async (event) => {
+    event.preventDefault();
+    if (!draft.name.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const body = JSON.stringify({
+        ...draft,
+        name: draft.name.trim(),
+        // An empty date box clears the date; the API reads an explicit null so.
+        release_date: draft.release_date || null,
+      });
+      const saved = await api(
+        editing ? `/api/releases/${release.id}` : `/api/projects/${projectId}/releases`,
+        { method: editing ? "PUT" : "POST", body }
+      );
+      onNotify(editing ? `Release "${saved.name}" updated.` : `Release "${saved.name}" created.`, "success");
+      await onSaved(saved, !editing);
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/releases/${release.id}`, { method: "DELETE" });
+      onNotify(`Release "${release.name}" deleted.`, "success");
+      await onDeleted();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return html`
+    <${SideDrawer} title=${editing ? "Edit release" : "New release"} onClose=${onClose}>
+      <form onSubmit=${save}>
+        <div className="form-grid">
+          <div className="field-wide">
+            <label htmlFor="release-name">Release name</label>
+            <input
+              id="release-name"
+              value=${draft.name}
+              onInput=${(event) => setDraft({ ...draft, name: event.target.value })}
+              placeholder="e.g. 2.0 or Q1 launch"
+              required
+              autoFocus
+            />
+          </div>
+          <div className="field-wide">
+            <label htmlFor="release-date">Release date</label>
+            <input
+              id="release-date"
+              type="date"
+              value=${draft.release_date}
+              onInput=${(event) => setDraft({ ...draft, release_date: event.target.value })}
+            />
+            <span className="help-text">
+              Optional — when this release reaches customers. Drawn as a marker on the timeline.
+            </span>
+          </div>
+          <div className="field-wide">
+            <label htmlFor="release-description">Description</label>
+            <textarea
+              id="release-description"
+              rows="4"
+              value=${draft.description}
+              onInput=${(event) => setDraft({ ...draft, description: event.target.value })}
+            ></textarea>
+            <span className="help-text">${DESCRIPTION_HINT}</span>
+          </div>
+        </div>
+        <div className="actions">
+          <button
+            className="button-primary"
+            type="submit"
+            disabled=${busy || !draft.name.trim()}
+            aria-busy=${busy}
+          >${editing ? "Save changes" : "Create release"}</button>
+        </div>
+      </form>
+
+      ${editing && keyDates
+        ? html`<${TimelineDatesEditor}
+            projectId=${projectId}
+            releaseId=${release.id}
+            keyDates=${keyDates}
+            onNotify=${onNotify}
+            onChanged=${() => onSaved(release, false)}
+          />`
+        : null}
+
+      ${editing
+        ? html`
+            <div className="project-drawer-danger">
+              <strong>Danger zone</strong>
+              <p className="panel-copy" style=${{ margin: 0 }}>
+                Deleting this release also removes its deliverables, milestones, and timeline dates. Teams are kept. This cannot be undone.
+              </p>
+              <div className="field-wide">
+                <label htmlFor="release-delete-confirm">Type “${release.name}” to confirm</label>
+                <input
+                  id="release-delete-confirm"
+                  value=${confirmName}
+                  onInput=${(event) => setConfirmName(event.target.value)}
+                  placeholder=${release.name}
+                  autoComplete="off"
+                />
+              </div>
+              <div className="actions">
+                <button
+                  className="button-danger"
+                  type="button"
+                  onClick=${remove}
+                  disabled=${busy || confirmName.trim() !== release.name}
+                >Delete release</button>
+              </div>
+            </div>
+          `
+        : null}
+
+      ${error ? html`<div className="side-drawer-row-error">${error}</div>` : null}
+    <//>
+  `;
+}
+
+// A workspace's front door: its releases as cards. Opening one shows that
+// release's timeline.
+function WorkspaceHomeView({ project, onBack, onOpenRelease, onNotify, onProjectChanged, onProjectDeleted }) {
+  const [releases, setReleases] = useState(null);
+  const [drawer, setDrawer] = useState(null); // "settings" | "new-release"
+
+  const loadReleases = async () => {
+    try {
+      setReleases(await api(`/api/projects/${project.id}/releases`));
+    } catch (error) {
+      onNotify(error.message, "error");
+      setReleases([]);
+    }
+  };
+
+  useEffect(() => {
+    loadReleases();
+  }, [project.id]);
+
+  const inactive = project.status === "inactive";
+
+  return html`
+    <div className="app-shell">
+      <div className="workspace-topbar">
+        <button className="back-link" type="button" onClick=${onBack}>
+          <${BackArrowIcon} />
+          Back to workspaces
+        </button>
       </div>
+
+      <section className="hero">
+        <div className="hero-card" style=${{ "--project-color": project.color }}>
+          <div className="eyebrow">
+            Project workspace
+            ${project.is_example ? html` · <span className="project-example-pill tiny-pill">Example</span>` : null}
+            ${inactive ? html` · <span className="project-inactive-pill tiny-pill">Inactive</span>` : null}
+          </div>
+          <div className="hero-title-row">
+            <h1 className="hero-title">${project.name}</h1>
+            <button
+              className="icon-button"
+              type="button"
+              onClick=${() => setDrawer("settings")}
+              aria-label="Edit project workspace"
+              title="Edit workspace"
+            ><${PencilIcon} /></button>
+          </div>
+          <p className="hero-copy">
+            <${RichText} text=${project.description || "No description yet."} />
+          </p>
+        </div>
+      </section>
+
+      <section className="project-section">
+        <div className="dashboard-header compact">
+          <div className="project-section-heading">
+            <h2>Releases</h2>
+            <span className="tiny-pill">${releases ? releases.length : "…"}</span>
+          </div>
+          <button className="button-primary" type="button" onClick=${() => setDrawer("new-release")}>
+            + New Release
+          </button>
+        </div>
+        <p className="panel-copy">Select a release to view its timeline, deliverables, and risk.</p>
+        ${releases && releases.length
+          ? html`
+              <div className="project-grid">
+                ${releases.map(
+                  (release) => html`
+                    <article className="project-card release-card" key=${release.id} style=${{ "--project-color": project.color }}>
+                      <div className="project-card-header">
+                        <div className="project-dot"></div>
+                        <strong>${release.name}</strong>
+                      </div>
+                      <p className="panel-copy project-card-copy">${release.description || "No description yet."}</p>
+                      <div className="project-stats">
+                        <span className="tiny-pill">${release.total_deliverables} deliverables</span>
+                        <span className="tiny-pill">${release.at_risk_deliverables} at risk</span>
+                        <span className="tiny-pill">${release.delayed_deliverables} delayed</span>
+                      </div>
+                      <p className="help-text project-card-release">
+                        ${release.release_date
+                          ? `Release · ${formatReleaseDate(release.release_date)}`
+                          : "No release date yet"}
+                      </p>
+                      <div className="actions">
+                        <button className="button-primary" type="button" onClick=${() => onOpenRelease(release.id)}>
+                          View release
+                        </button>
+                      </div>
+                    </article>
+                  `
+                )}
+              </div>
+            `
+          : releases
+            ? html`<div className="empty-state">No releases yet — use “+ New Release” to add one.</div>`
+            : null}
+      </section>
+
+      ${drawer === "settings"
+        ? html`<${ProjectSettingsDrawer}
+            project=${project}
+            summary=${project}
+            onClose=${() => setDrawer(null)}
+            onNotify=${onNotify}
+            onSaved=${onProjectChanged}
+            onDeleted=${onProjectDeleted}
+          />`
+        : null}
+      ${drawer === "new-release"
+        ? html`<${ReleaseDrawer}
+            projectId=${project.id}
+            release=${null}
+            onClose=${() => setDrawer(null)}
+            onNotify=${onNotify}
+            onSaved=${async () => {
+              await loadReleases();
+              await onProjectChanged();
+            }}
+            onDeleted=${async () => {}}
+          />`
+        : null}
     </div>
   `;
 }
@@ -4761,6 +5190,8 @@ function DeliverableTable({ deliverables }) {
 function WorkspaceView({
   dashboard,
   onBack,
+  onSwitchRelease,
+  onReleaseDeleted,
   csvFile,
   setCsvFile,
   onCsvSubmit,
@@ -4768,13 +5199,13 @@ function WorkspaceView({
   milestoneActions,
   onNotify,
   onWorkspaceRefresh,
-  onProjectDeleted,
   submitting,
 }) {
   const teams = dashboard.teams;
   const deliverables = dashboard.deliverables;
   const keyDates = dashboard.key_dates || [];
-  const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
+  const release = dashboard.release;
+  const [drawer, setDrawer] = useState(null); // "release"
   // Epic keys come from the Jira panel's load; the pickers use them for the
   // "From linked epics" tab. The same load reports which team each epic belongs
   // to, which is how a deliverable's stories get bucketed by team.
@@ -4788,8 +5219,20 @@ function WorkspaceView({
       <div className="workspace-topbar">
         <button className="back-link" type="button" onClick=${onBack}>
           <${BackArrowIcon} />
-          Back to projects
+          Back to ${dashboard.project.name}
         </button>
+        <label className="release-switcher">
+          <span>Release</span>
+          <select
+            value=${release.id}
+            onChange=${(event) => onSwitchRelease(Number(event.target.value))}
+            aria-label="Switch release"
+          >
+            ${dashboard.releases.map(
+              (item) => html`<option key=${item.id} value=${item.id}>${item.name}</option>`
+            )}
+          </select>
+        </label>
       </div>
 
       <section className="hero">
@@ -4797,22 +5240,21 @@ function WorkspaceView({
           <div className="eyebrow">Project workspace</div>
           <div className="hero-title-row">
             <h1 className="hero-title">${dashboard.project.name}</h1>
-            <button
-              className="icon-button"
-              type="button"
-              onClick=${() => setProjectDrawerOpen(true)}
-              aria-label="Edit project workspace"
-              title="Edit workspace"
-            ><${PencilIcon} /></button>
           </div>
           <p className="hero-copy">
             <${RichText} text=${dashboard.project.description || "No description yet."} />
           </p>
-          ${dashboard.project.release_date
-            ? html`<p className="hero-release">
-                Release · ${formatReleaseDate(dashboard.project.release_date)}
-              </p>`
-            : null}
+          <p className="hero-release">
+            ${release.name}
+            ${release.release_date ? ` · ${formatReleaseDate(release.release_date)}` : " · no release date yet"}
+            <button
+              className="icon-button"
+              type="button"
+              onClick=${() => setDrawer("release")}
+              aria-label="Edit release"
+              title="Edit release"
+            ><${PencilIcon} /></button>
+          </p>
           <div className="hero-stats">
             <${SummaryCard}
               label="Teams"
@@ -4846,7 +5288,7 @@ function WorkspaceView({
         <${GanttChart}
           teams=${teams}
           deliverables=${deliverables}
-          releaseDate=${dashboard.project.release_date || ""}
+          releaseDate=${release.release_date || ""}
           keyDates=${keyDates}
           onInlineSave=${deliverableActions.update}
           onMilestoneSave=${milestoneActions.update}
@@ -4892,18 +5334,16 @@ function WorkspaceView({
         />
       </section>
 
-      ${projectDrawerOpen
-        ? html`
-            <${ProjectSettingsDrawer}
-              project=${dashboard.project}
-              summary=${dashboard.summary}
-              keyDates=${keyDates}
-              onClose=${() => setProjectDrawerOpen(false)}
-              onNotify=${onNotify}
-              onSaved=${onWorkspaceRefresh}
-              onDeleted=${onProjectDeleted}
-            />
-          `
+      ${drawer === "release"
+        ? html`<${ReleaseDrawer}
+            projectId=${dashboard.project.id}
+            release=${release}
+            keyDates=${keyDates}
+            onClose=${() => setDrawer(null)}
+            onNotify=${onNotify}
+            onSaved=${onWorkspaceRefresh}
+            onDeleted=${onReleaseDeleted}
+          />`
         : null}
     </div>
   `;
@@ -4912,9 +5352,12 @@ function WorkspaceView({
 function App() {
   const [projects, setProjects] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
+  // null until a release is chosen: a workspace opens on its release list first.
+  const [selectedReleaseId, setSelectedReleaseId] = useState(null);
   const [dashboard, setDashboard] = useState(null);
 
-  const [projectForm, setProjectForm] = useState(DEFAULT_PROJECT);
+  const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
+  const [convertTarget, setConvertTarget] = useState(null);
   const [csvFile, setCsvFile] = useState(null);
 
   // One transient toast. `id` is monotonic so a fresh message restarts the fade
@@ -4956,8 +5399,8 @@ function App() {
     return data;
   };
 
-  const loadDashboard = async (projectId) => {
-    const data = await api(`/api/projects/${projectId}/dashboard`);
+  const loadDashboard = async (projectId, releaseId) => {
+    const data = await api(`/api/projects/${projectId}/dashboard?release_id=${releaseId}`);
     setDashboard(data);
     return data;
   };
@@ -4966,7 +5409,10 @@ function App() {
     if (!selectedProjectId) {
       return;
     }
-    await Promise.all([loadProjects(), loadDashboard(selectedProjectId)]);
+    await Promise.all([
+      loadProjects(),
+      selectedReleaseId ? loadDashboard(selectedProjectId, selectedReleaseId) : null,
+    ]);
   };
 
   useEffect(() => {
@@ -4984,6 +5430,12 @@ function App() {
 
   const goToPortfolio = () => {
     setSelectedProjectId(null);
+    setSelectedReleaseId(null);
+    setDashboard(null);
+  };
+
+  const goToWorkspace = () => {
+    setSelectedReleaseId(null);
     setDashboard(null);
   };
 
@@ -4992,11 +5444,17 @@ function App() {
     await loadProjects();
   };
 
-  const openProject = async (projectId) => {
+  const openProject = (projectId) => {
+    setSelectedProjectId(projectId);
+    setSelectedReleaseId(null);
+    setDashboard(null);
+  };
+
+  const openRelease = async (releaseId, projectId = selectedProjectId) => {
     setLoading(true);
     try {
-      await loadDashboard(projectId);
-      setSelectedProjectId(projectId);
+      await loadDashboard(projectId, releaseId);
+      setSelectedReleaseId(releaseId);
     } catch (error) {
       notify(error.message, "error");
     } finally {
@@ -5004,24 +5462,28 @@ function App() {
     }
   };
 
-  const handleCreateProject = async (event) => {
-    event.preventDefault();
+  const handleReleaseDeleted = async () => {
+    goToWorkspace();
+    await loadProjects();
+  };
+
+  // Resolves true when the workspace was created, so the drawer stays open (with
+  // the typed values) on failure.
+  const handleCreateProject = async (payload) => {
     setSubmitting(true);
     try {
       const project = await api("/api/projects", {
         method: "POST",
-        // An empty date box is "no release date yet", not an invalid date.
-        body: JSON.stringify({
-          ...projectForm,
-          release_date: projectForm.release_date || null,
-        }),
+        body: JSON.stringify(payload),
       });
-      setProjectForm(DEFAULT_PROJECT);
       await loadProjects();
-      notify("Project onboarded.", "success");
-      await openProject(project.id);
+      setNewWorkspaceOpen(false);
+      notify("Workspace created.", "success");
+      openProject(project.id);
+      return true;
     } catch (error) {
       notify(error.message, "error");
+      return false;
     } finally {
       setSubmitting(false);
     }
@@ -5049,7 +5511,8 @@ function App() {
       runRequest(
         `/api/projects/${selectedProjectId}/deliverables`,
         "POST",
-        payload,
+        { ...payload, release_id: selectedReleaseId },
+        
         "Deliverable created."
       ),
     update: (deliverableId, payload) =>
@@ -5096,7 +5559,7 @@ function App() {
     try {
       const formData = new FormData();
       formData.append("file", csvFile);
-      const result = await api(`/api/projects/${selectedProjectId}/import/csv`, {
+      const result = await api(`/api/projects/${selectedProjectId}/import/csv?release_id=${selectedReleaseId}`, {
         method: "POST",
         body: formData,
       });
@@ -5131,11 +5594,13 @@ function App() {
             >${toast.text}</div>
           `
         : null}
-      ${selectedProjectId && dashboard
+      ${selectedProjectId && selectedReleaseId && dashboard
         ? html`
             <${WorkspaceView}
               dashboard=${dashboard}
-              onBack=${goToPortfolio}
+              onBack=${goToWorkspace}
+              onSwitchRelease=${openRelease}
+              onReleaseDeleted=${handleReleaseDeleted}
               csvFile=${csvFile}
               setCsvFile=${setCsvFile}
               onCsvSubmit=${handleCsvSubmit}
@@ -5143,20 +5608,46 @@ function App() {
               milestoneActions=${milestoneActions}
               onNotify=${notify}
               onWorkspaceRefresh=${refreshWorkspace}
-              onProjectDeleted=${handleProjectDeleted}
               submitting=${submitting}
             />
           `
-        : html`
-            <${LandingView}
-              projects=${projects}
-              onOpenProject=${openProject}
-              projectForm=${projectForm}
-              setProjectForm=${setProjectForm}
-              onCreateProject=${handleCreateProject}
-              submitting=${submitting}
-            />
-          `}
+        : selectedProjectId && projects.some((item) => item.id === selectedProjectId)
+          ? html`
+              <${WorkspaceHomeView}
+                project=${projects.find((item) => item.id === selectedProjectId)}
+                onBack=${goToPortfolio}
+                onOpenRelease=${openRelease}
+                onNotify=${notify}
+                onProjectChanged=${loadProjects}
+                onProjectDeleted=${handleProjectDeleted}
+              />
+            `
+          : html`
+              <${LandingView}
+                projects=${projects}
+                onOpenProject=${openProject}
+                onNewWorkspace=${() => setNewWorkspaceOpen(true)}
+                onConvert=${setConvertTarget}
+              />
+            `}
+      ${newWorkspaceOpen
+        ? html`<${NewWorkspaceDrawer}
+            onClose=${() => setNewWorkspaceOpen(false)}
+            onCreate=${handleCreateProject}
+            submitting=${submitting}
+          />`
+        : null}
+      ${convertTarget
+        ? html`<${ConvertExampleDrawer}
+            project=${convertTarget}
+            onClose=${() => setConvertTarget(null)}
+            onNotify=${notify}
+            onDone=${async () => {
+              setConvertTarget(null);
+              await loadProjects();
+            }}
+          />`
+        : null}
     </>
   `;
 }

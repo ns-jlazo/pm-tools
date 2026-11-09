@@ -94,6 +94,13 @@ class _FakeClient:
             "nextPageToken": str(start + max_results) if more else None,
         }
 
+    count_error: Any = None
+
+    def count_issues(self, jql: str) -> int:
+        if self.count_error is not None:
+            raise self.count_error
+        return len(self.issues)
+
     def get_issue(self, key: str, fields: Any = None) -> Dict[str, Any]:
         self.get_calls.append(key)
         if key not in self.issues:
@@ -443,6 +450,16 @@ class JiraSearchPaginationTests(unittest.TestCase):
         self.assertEqual([i.key for i in page.issues][0], "SNA-21")
         self.assertTrue(page.is_last)
         self.assertIsNone(page.next_page_token)
+
+    def test_total_comes_from_the_count_on_the_first_page_only(self) -> None:
+        self.assertEqual(jira_service.search("project = SNA").total, 25)
+        self.assertIsNone(jira_service.search("project = SNA", next_page_token="10").total)
+
+    def test_count_failure_does_not_break_the_search(self) -> None:
+        self.fake.count_error = RuntimeError("boom")
+        page = jira_service.search("project = SNA")
+        self.assertIsNone(page.total)
+        self.assertEqual(len(page.issues), 10)
 
 
 class JiraLabelTests(unittest.TestCase):

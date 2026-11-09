@@ -304,28 +304,124 @@ class ProjectMutationTests(unittest.TestCase):
         self.assertEqual(project.name, "Alpha")
         self.assertEqual(project.description, "Original copy.")
 
-    def test_update_sets_and_clears_the_release_date(self) -> None:
+    def test_update_sets_and_clears_a_release_date(self) -> None:
+        project = self._project_with_work("Alpha")
+        release = services.create_release(
+            self.db, project.id, schemas.ReleaseCreate(name="1.0")
+        )
+
+        services.update_release(
+            self.db, release, schemas.ReleaseUpdate(release_date=date(2026, 9, 1))
+        )
+        self.assertEqual(release.release_date, date(2026, 9, 1))
+
+        # An explicit null clears the date; an omitted field leaves it alone.
+        services.update_release(self.db, release, schemas.ReleaseUpdate(name="1.0.1"))
+        self.assertEqual(release.release_date, date(2026, 9, 1))
+        services.update_release(self.db, release, schemas.ReleaseUpdate(release_date=None))
+        self.assertIsNone(release.release_date)
+
+    def test_release_names_are_unique_per_project(self) -> None:
+        alpha = self._project_with_work("Alpha")
+        beta = self._project_with_work("Beta")
+        services.create_release(self.db, alpha.id, schemas.ReleaseCreate(name="1.0"))
+
+        services.create_release(self.db, beta.id, schemas.ReleaseCreate(name="1.0"))
+        with self.assertRaises(ValueError):
+            services.create_release(self.db, alpha.id, schemas.ReleaseCreate(name="1.0"))
+
+    def test_deliverables_and_key_dates_are_scoped_to_their_release(self) -> None:
+        project = self._project_with_work("Alpha")
+        first = services.create_release(self.db, project.id, schemas.ReleaseCreate(name="1.0"))
+        second = services.create_release(self.db, project.id, schemas.ReleaseCreate(name="2.0"))
+        team = services.list_teams(self.db, project.id)[0]
+        services.create_deliverable(
+            self.db,
+            project.id,
+            schemas.DeliverableCreate(
+                title="Only in 2.0",
+                team_id=team.id,
+                planned_start=date(2026, 8, 1),
+                planned_end=date(2026, 8, 2),
+                release_id=second.id,
+            ),
+        )
+        services.create_key_date(
+            self.db,
+            project.id,
+            schemas.ProjectKeyDateCreate(
+                name="Freeze", event_date=date(2026, 8, 1), release_id=second.id
+            ),
+        )
+
+        in_first = services.dashboard_payload(self.db, project.id, first.id)
+        in_second = services.dashboard_payload(self.db, project.id, second.id)
+
+        self.assertEqual([d.title for d in in_first.deliverables], [])
+        self.assertEqual(in_first.key_dates, [])
+        self.assertEqual([d.title for d in in_second.deliverables], ["Only in 2.0"])
+        self.assertEqual([k.name for k in in_second.key_dates], ["Freeze"])
+
+    def test_rejects_a_release_from_another_project(self) -> None:
+        alpha = self._project_with_work("Alpha")
+        beta = self._project_with_work("Beta")
+        foreign = services.create_release(self.db, beta.id, schemas.ReleaseCreate(name="1.0"))
+
+        with self.assertRaises(ValueError):
+            services.resolve_release_id(self.db, alpha.id, foreign.id)
+
+    def test_create_project_seeds_a_first_release(self) -> None:
+        project = services.create_project(
+            self.db,
+            schemas.ProjectCreate(
+                name="Gamma", release_name="GA", release_date=date(2026, 12, 1)
+            ),
+        )
+
+        releases = services.list_releases(self.db, project.id)
+        self.assertEqual([(r.name, r.release_date) for r in releases], [("GA", date(2026, 12, 1))])
+
+    def test_status_can_be_set_inactive(self) -> None:
+        project = self._project_with_work("Alpha")
+
+        services.update_project(self.db, project, schemas.ProjectUpdate(status="inactive"))
+
+        self.assertEqual(project.status, "inactive")
+        with self.assertRaises(ValueError):
+            schemas.ProjectUpdate(status="archived")
+
+    def test_promoting_an_example_can_clear_its_sample_data(self) -> None:
+        project = self._project_with_work("Alpha")
+        project.is_example = True
+        self.db.commit()
+
+        services.update_project(
+            self.db,
+            project,
+            schemas.ProjectUpdate(is_example=False, clear_sample_data=True),
+        )
+
+        self.assertFalse(project.is_example)
+        self.assertEqual(services.list_deliverables(self.db, project.id), [])
+        self.assertEqual(len(services.list_teams(self.db, project.id)), 1)
+
+    def test_promoting_an_example_keeps_data_by_default(self) -> None:
+        project = self._project_with_work("Alpha")
+        project.is_example = True
+        self.db.commit()
+
+        services.update_project(self.db, project, schemas.ProjectUpdate(is_example=False))
+
+        self.assertEqual(len(services.list_deliverables(self.db, project.id)), 2)
+
+    def test_clear_sample_data_is_ignored_for_non_example_workspaces(self) -> None:
         project = self._project_with_work("Alpha")
 
         services.update_project(
-            self.db, project, schemas.ProjectUpdate(release_date=date(2026, 9, 1))
-        )
-        self.assertEqual(project.release_date, date(2026, 9, 1))
-
-        # An explicit null is how the settings drawer clears the date; the loop
-        # used to skip every None and silently keep the old value.
-        services.update_project(self.db, project, schemas.ProjectUpdate(release_date=None))
-        self.assertIsNone(project.release_date)
-
-    def test_update_leaves_the_release_date_alone_when_omitted(self) -> None:
-        project = self._project_with_work("Alpha")
-        services.update_project(
-            self.db, project, schemas.ProjectUpdate(release_date=date(2026, 9, 1))
+            self.db, project, schemas.ProjectUpdate(color="#1d4ed8", clear_sample_data=True)
         )
 
-        services.update_project(self.db, project, schemas.ProjectUpdate(name="Alpha v2"))
-
-        self.assertEqual(project.release_date, date(2026, 9, 1))
+        self.assertEqual(len(services.list_deliverables(self.db, project.id)), 2)
 
     def test_update_rejects_duplicate_name(self) -> None:
         self._project_with_work("Alpha")

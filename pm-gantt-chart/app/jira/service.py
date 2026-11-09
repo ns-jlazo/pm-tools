@@ -260,8 +260,15 @@ def search(
     )
     server_url = client.url
     issues = [_to_search_result(raw, server_url) for raw in envelope.get("issues") or []]
+    total: Optional[int] = None
+    if not next_page_token:
+        # Only the first page needs it; the UI keeps the number for later pages.
+        try:
+            total = client.count_issues(jql)
+        except Exception:  # the count is a nicety; never fail the search over it
+            logger.warning("Jira approximate-count failed", exc_info=True)
     return schemas.JiraSearchResponse(
-        total=envelope.get("total") or len(issues),
+        total=total,
         issues=issues,
         next_page_token=envelope.get("nextPageToken"),
         is_last=bool(envelope.get("isLast", True)),
