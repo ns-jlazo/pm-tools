@@ -2147,7 +2147,7 @@ function JiraWorkItemLinks({
       <div className="jira-task-header">
         <strong>Jira stories</strong>
         <button className="button-secondary" type="button" onClick=${() => { setPickerError(""); setShowPicker(true); }}>
-          Find & Link jira stories
+          Find & Link Jira stories
         </button>
       </div>
       ${loading && !links.length
@@ -2530,7 +2530,7 @@ function DashboardView({ projects, onOpenProject, onNewProject, onConvert, onSho
         title="Active projects"
         category="Active"
         onShowCategory=${onShowCategory}
-        copy=${`Projects tracking real delivery work — showing ${DASHBOARD_PROJECTS_PER_GROUP}, nearest upcoming release first, then most recently created.`}
+        copy=${`Projects tracking real delivery work — showing ${DASHBOARD_PROJECTS_PER_GROUP} projects with the closest upcoming releases then the most recently created projects.`}
         total=${grouped.activeProjects.length}
         projects=${activeProjects}
         emptyText="No active projects yet — use “+ New Project” to create one."
@@ -2544,7 +2544,7 @@ function DashboardView({ projects, onOpenProject, onNewProject, onConvert, onSho
             category="Inactive"
             onShowCategory=${onShowCategory}
             total=${grouped.inactiveProjects.length}
-            copy=${`Projects no longer under way. Showing the first ${DASHBOARD_PROJECTS_PER_GROUP} alphabetically. Set one back to active in its settings.`}
+            copy=${`Projects no longer under way. Showing the first ${DASHBOARD_PROJECTS_PER_GROUP} alphabetically. Set a project back to active in its project settings.`}
             projects=${inactiveProjects}
             onOpenProject=${onOpenProject}
             onConvert=${onConvert}
@@ -2646,7 +2646,7 @@ function NewProjectDrawer({ onClose, onCreate, submitting }) {
             <span className="help-text">${DESCRIPTION_HINT}</span>
           </div>
           <div className="field-wide">
-            <label htmlFor="project-release-name">First release</label>
+            <label htmlFor="project-release-name">Release Name</label>
             <input
               id="project-release-name"
               value=${form.release_name}
@@ -3070,8 +3070,8 @@ function DeliverableForm({
         </div>
 
         <div className="field-wide">
-          <label>Upstream dependencies</label>
-          <div className="contrib-chips" role="group" aria-label="Upstream dependencies">
+          <label>Dependencies</label>
+          <div className="contrib-chips" role="group" aria-label="Dependencies">
             ${deliverables.length
               ? deliverables.map((deliverable) => {
                   const selected = dependencySet.has(String(deliverable.id));
@@ -3108,12 +3108,12 @@ function DeliverableForm({
         ? html`
             <div className="jira-pending">
               <div className="jira-pending-header">
-                <strong>Jira stories to link on create</strong>
+                <strong>Jira stories to link to deliverable</strong>
                 <button
                   className="button-secondary"
                   type="button"
                   onClick=${() => { setPickerError(""); setShowPicker(true); }}
-                >Find & Link jira stories</button>
+                >Find & Link Jira stories</button>
               </div>
               ${pendingKeys.length
                 ? html`
@@ -3170,7 +3170,7 @@ function DeliverableForm({
       ${showPicker
         ? html`
             <${JiraPickerModal}
-              title="Select Jira stories to link on create"
+              title="Select Jira stories to link to deliverable"
               teams=${null}
               onClose=${() => setShowPicker(false)}
               onLink=${appendPendingJira}
@@ -3318,12 +3318,12 @@ function MilestoneForm({
         ? html`
             <div className="jira-pending">
               <div className="jira-pending-header">
-                <strong>Jira stories to link on create</strong>
+                <strong>Jira stories to link to milestone</strong>
                 <button
                   className="button-secondary"
                   type="button"
                   onClick=${() => { setPickerError(""); setShowPicker(true); }}
-                >Find & Link jira stories</button>
+                >Find & Link Jira stories</button>
               </div>
               ${pendingKeys.length
                 ? html`
@@ -3359,7 +3359,7 @@ function MilestoneForm({
       ${showPicker
         ? html`
             <${JiraPickerModal}
-              title="Select Jira stories to link on create"
+              title="Select Jira stories to link to milestone"
               teams=${null}
               onClose=${() => setShowPicker(false)}
               onLink=${appendPendingJira}
@@ -3716,9 +3716,8 @@ function DeliverableRosterPanel({
         <div>
           <h2>Deliverables & milestones</h2>
           <p className="panel-copy">
-            Deliverables are this project's features and enhancements; a milestone is one dated
-            piece of a deliverable that any team can own. Editing opens a dialog, so the timeline
-            above stays what you read.
+            Deliverables are this project's features and enhancements; a milestone is
+            a piece of a deliverable that any team can own.
           </p>
         </div>
         <div className="actions">
@@ -4621,8 +4620,8 @@ function GanttChart({
             Click any deliverable bar — or a milestone diamond — to edit it and link Jira stories
             without leaving the timeline view.
             ${releaseDate
-              ? html`<span>
-                  ${" "}Customer release: ${formatDisplayDate(releaseDate)}.
+              ? html`<br /><span>
+                  Customer release: ${formatDisplayDate(releaseDate)}.
                 </span>`
               : null}
           </p>
@@ -4634,7 +4633,7 @@ function GanttChart({
         </div>
         <div className="gantt-toolbar-side">
           <div className="gantt-export" data-export-ignore="true">
-            <span className="gantt-export-label">Export image</span>
+            <span className="gantt-export-label">Export gantt chart</span>
             <button type="button" className="button-secondary" disabled=${exporting} onClick=${() => exportImage("png")}>PNG</button>
             <button type="button" className="button-secondary" disabled=${exporting} onClick=${() => exportImage("jpeg")}>JPEG</button>
           </div>
