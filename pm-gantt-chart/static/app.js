@@ -2515,7 +2515,7 @@ function DashboardView({ projects, onOpenProject, onNewProject, onConvert, onSho
     <div className="app-shell">
       <section className="landing-hero hero-card landing-hero-row">
         <div>
-          <div className="eyebrow">PM Tool v1</div>
+          <div className="eyebrow">PM TOOL V2</div>
           <h1 className="hero-title">PPM Dashboard</h1>
           <p className="hero-copy">
             Select an onboarded project to review timeline risk, dependencies, and delivery status.
